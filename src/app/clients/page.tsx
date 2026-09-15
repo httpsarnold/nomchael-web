@@ -150,6 +150,7 @@ export default function ClientsPage() {
                 required
                 value={form.phone}
                 onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                placeholder="UK: 447588830800 or +44… · ZW: 077…"
               />
             </label>
             <label>
@@ -157,6 +158,7 @@ export default function ClientsPage() {
               <input
                 value={form.whatsapp}
                 onChange={(e) => setForm({ ...form, whatsapp: e.target.value })}
+                placeholder="Same format as phone"
               />
             </label>
             <label>
