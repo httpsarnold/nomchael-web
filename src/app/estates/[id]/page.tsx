@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { BusyOverlay, LoadingState } from '@/components/LoadingState';
@@ -15,6 +15,8 @@ export default function EstateDetailPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [bulkStage, setBulkStage] = useState({ start: '__KEEP__', current: '__KEEP__' });
   const [stageReport, setStageReport] = useState<any>(null);
+  const managePanelRef = useRef<HTMLDivElement>(null);
+  const addPanelRef = useRef<HTMLDivElement>(null);
   const [estate, setEstate] = useState<any>(null);
   const [error, setError] = useState('');
   const [info, setInfo] = useState('');
@@ -103,6 +105,18 @@ export default function EstateDetailPage() {
       prev.includes(houseId) ? prev.filter((x) => x !== houseId) : [...prev, houseId],
     );
   }
+
+  useEffect(() => {
+    if (managingId) {
+      managePanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [managingId]);
+
+  useEffect(() => {
+    if (showAdd) {
+      addPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  }, [showAdd]);
 
   useEffect(() => {
     if (!id) return;
@@ -486,7 +500,7 @@ export default function EstateDetailPage() {
           </div>
 
           {showAdd && (
-            <div className="panel" style={{ marginBottom: '1rem' }}>
+            <div ref={addPanelRef} className="panel" style={{ marginBottom: '1rem' }}>
               <h3>
                 Add house to this estate{' '}
                 <button
@@ -588,7 +602,11 @@ export default function EstateDetailPage() {
           )}
 
           {managing && (
-            <div className="panel" style={{ marginBottom: '1rem' }}>
+            <div
+              ref={managePanelRef}
+              className="panel"
+              style={{ marginBottom: '1rem', border: '2px solid #b45309' }}
+            >
               <h3>
                 Manage house #{managing.unitNumber}{' '}
                 <button
