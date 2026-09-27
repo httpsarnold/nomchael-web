@@ -125,6 +125,18 @@ export function EstateStageReport({ initialEstateId = '' }: { initialEstateId?: 
             >
               Export CSV
             </button>
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() =>
+                downloadFile(
+                  `/estates/${report.estate.id}/stage-report/export?format=pdf`,
+                  `${report.estate.code}-stages.pdf`,
+                ).catch((e) => setError(e.message))
+              }
+            >
+              Export PDF
+            </button>
           </div>
           <div className="table-wrap">
             <table>

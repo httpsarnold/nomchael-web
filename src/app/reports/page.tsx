@@ -793,9 +793,23 @@ export default function ReportsPage() {
               <strong>Net profit: {money(income.netProfitCents)}</strong>
             </p>
             {csv && (
-              <button className="btn secondary" type="button" onClick={downloadCsv}>
-                Download accounting CSV
-              </button>
+              <div className="row-actions" style={{ flexWrap: 'wrap', gap: 8 }}>
+                <button className="btn secondary" type="button" onClick={downloadCsv}>
+                  Download accounting CSV
+                </button>
+                <button
+                  className="btn secondary"
+                  type="button"
+                  onClick={() =>
+                    downloadPdf(
+                      '/reports/company/accounting-pdf',
+                      `nomchael-income-${new Date().toISOString().slice(0, 10)}.pdf`,
+                    ).catch((e) => setError(e.message))
+                  }
+                >
+                  Download accounting PDF
+                </button>
+              </div>
             )}
             <div style={{ height: 280, marginTop: 16 }}>
               <ResponsiveContainer width="100%" height="100%">

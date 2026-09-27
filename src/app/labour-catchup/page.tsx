@@ -203,6 +203,17 @@ function LabourCatchupInner() {
         >
           Export CSV
         </button>
+        <button
+          type="button"
+          className="btn secondary"
+          onClick={() =>
+            downloadFile('/labour-catchup/export?format=pdf', 'labour-catchup.pdf').catch((e) =>
+              setError(e.message),
+            )
+          }
+        >
+          Export PDF
+        </button>
         <Link href="/estates" className="btn secondary">
           Estates
         </Link>

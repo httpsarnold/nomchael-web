@@ -338,6 +338,18 @@ export default function EstateDetailPage() {
               >
                 Export statement CSV
               </button>
+              <button
+                type="button"
+                className="btn secondary"
+                onClick={() =>
+                  downloadFile(
+                    `/estates/${id}/export?format=pdf`,
+                    `${estate.code}-labour.pdf`,
+                  ).catch((e) => setError(e.message))
+                }
+              >
+                Export statement PDF
+              </button>
               <Link href={`/bulk-labour?estate=${id}`} className="btn secondary">
                 Bulk allocate (income / labour used)
               </Link>
@@ -770,6 +782,18 @@ export default function EstateDetailPage() {
                   }
                 >
                   Export stage report CSV
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  onClick={() =>
+                    downloadFile(
+                      `/estates/${id}/stage-report/export?format=pdf`,
+                      `${estate.code}-stages.pdf`,
+                    ).catch((e) => setError(e.message))
+                  }
+                >
+                  Export stage report PDF
                 </button>
                 <Link href="/reports#stages" className="btn secondary">
                   All estates stage report
