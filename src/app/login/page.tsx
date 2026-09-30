@@ -35,12 +35,9 @@ export default function LoginPage() {
   return (
     <div className="login-page">
       <div className="login-card">
-        <div className="brand" style={{ border: 'none', margin: 0, padding: 0 }}>
-          <div className="brand-mark">NC</div>
-          <div>
-            <strong>Nomchael Construction</strong>
-            <span>ERP Zimbabwe</span>
-          </div>
+        <div className="login-logo">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/nomchael-logo.png" alt="Nomchael Incorporated" />
         </div>
         <h1 style={{ marginTop: '1.25rem' }}>Sign in</h1>
         <p className="muted">Site, finance and workforce control</p>

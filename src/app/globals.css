@@ -1190,6 +1190,14 @@ input, select, textarea {
   box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
 }
 .login-card h1 { font-size: 1.8rem; }
+.login-logo {
+  display: flex;
+  justify-content: center;
+}
+.login-logo img {
+  width: 180px;
+  height: auto;
+}
 .error { color: var(--danger); font-size: 0.9rem; }
 
 .leaflet-container {
