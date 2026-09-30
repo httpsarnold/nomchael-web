@@ -14,7 +14,7 @@ type NavItem = {
 };
 type NavGroup = { id: string; label: string; summary: string; items: NavItem[] };
 
-/** Estate catch-up mode: only Labour revenue + Reports stay clickable. */
+/** Estate catch-up mode: only Labour revenue, Quick quotation and Reports stay clickable. */
 const ESTATE_FOCUS_MODE = true;
 
 const primary: (NavItem & { icon: string })[] = [
@@ -67,6 +67,7 @@ const groups: NavGroup[] = [
     label: 'Finance',
     summary: 'General',
     items: [
+      { href: '/quick-quotation', label: 'Quick quotation' },
       { href: '/finance', label: 'Finance desk', locked: ESTATE_FOCUS_MODE },
       { href: '/suppliers', label: 'Suppliers & Creditors', locked: ESTATE_FOCUS_MODE },
       { href: '/stock', label: 'Stores & Stock', locked: ESTATE_FOCUS_MODE },
@@ -182,7 +183,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         {ESTATE_FOCUS_MODE && (
           <p className="nav-focus-note">
-            Estate catch-up mode: only Labour revenue and Reports are open.
+            Estate catch-up mode: only Labour revenue, Quick quotation and Reports are open.
           </p>
         )}
 
