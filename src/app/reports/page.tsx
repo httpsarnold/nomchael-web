@@ -269,19 +269,11 @@ export default function ReportsPage() {
           <>
             <div className="grid grid-3" style={{ marginTop: '1rem' }}>
               <div>
-                <div className="muted">Quoted</div>
-                <strong>{money(estateStatement.summary.labourQuotedCents)}</strong>
-              </div>
-              <div>
-                <div className="muted">Discounts</div>
-                <strong>{money(estateStatement.summary.discountCents)}</strong>
-              </div>
-              <div>
-                <div className="muted">Net due</div>
+                <div className="muted">Net labour due</div>
                 <strong>{money(estateStatement.summary.netDueCents)}</strong>
               </div>
               <div>
-                <div className="muted">Cash received</div>
+                <div className="muted">Labour cash received</div>
                 <strong>{money(estateStatement.summary.cashReceivedCents)}</strong>
               </div>
               <div>
@@ -289,14 +281,24 @@ export default function ReportsPage() {
                 <strong>{money(estateStatement.summary.labourUsedCents || 0)}</strong>
               </div>
               <div>
-                <div className="muted">Expenses</div>
-                <strong>{money(estateStatement.summary.expensesCents || 0)}</strong>
+                <div className="muted">Project expenses (labour account)</div>
+                <strong>{money(estateStatement.summary.projectExpensesCents || 0)}</strong>
               </div>
               <div>
-                <div className="muted">Borrowings outstanding</div>
-                <strong>
-                  {money(estateStatement.summary.borrowingsOutstandingCents || 0)}
-                </strong>
+                <div className="muted">Labour account balance</div>
+                <strong>{money(estateStatement.summary.labourBalanceCents || 0)}</strong>
+              </div>
+              <div>
+                <div className="muted">Profit earned</div>
+                <strong>{money(estateStatement.summary.profitEarnedCents || 0)}</strong>
+              </div>
+              <div>
+                <div className="muted">Company expenses (profit account)</div>
+                <strong>{money(estateStatement.summary.companyExpensesCents || 0)}</strong>
+              </div>
+              <div>
+                <div className="muted">Profit left</div>
+                <strong>{money(estateStatement.summary.profitBalanceCents || 0)}</strong>
               </div>
               <div>
                 <div className="muted">Cash at hand</div>
@@ -319,28 +321,66 @@ export default function ReportsPage() {
                   .join(', ')}
               </p>
             )}
-            <div className="table-wrap" style={{ marginTop: '0.75rem' }}>
-              <table>
-                <thead>
-                  <tr>
-                    <th>Section</th>
-                    <th>Description</th>
-                    <th>DR</th>
-                    <th>CR</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {(estateStatement.lines || []).map((l: any, i: number) => (
-                    <tr key={i}>
-                      <td>{l.section}</td>
-                      <td>{l.description}</td>
-                      <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
-                      <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+            {estateStatement.labourAccount && (
+              <div className="table-wrap" style={{ marginTop: '0.75rem' }}>
+                <h4>
+                  Labour account DR / CR
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                    Balance {money(estateStatement.labourAccount.balanceCents)}
+                  </span>
+                </h4>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Section</th>
+                      <th>Description</th>
+                      <th>DR</th>
+                      <th>CR</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody>
+                    {(estateStatement.labourAccount.lines || []).map((l: any, i: number) => (
+                      <tr key={`labour-${i}`}>
+                        <td>{l.section}</td>
+                        <td>{l.description}</td>
+                        <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
+                        <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {estateStatement.companyAccount && (
+              <div className="table-wrap" style={{ marginTop: '0.75rem' }}>
+                <h4>
+                  Company / profit account DR / CR
+                  <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                    Balance {money(estateStatement.companyAccount.balanceCents)}
+                  </span>
+                </h4>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Section</th>
+                      <th>Description</th>
+                      <th>DR</th>
+                      <th>CR</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(estateStatement.companyAccount.lines || []).map((l: any, i: number) => (
+                      <tr key={`company-${i}`}>
+                        <td>{l.section}</td>
+                        <td>{l.description}</td>
+                        <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
+                        <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </>
         )}
       </div>

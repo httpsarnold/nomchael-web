@@ -8,13 +8,14 @@ let cachedStages: string[] | null = null;
 export function useStageOptions() {
   const [stages, setStages] = useState<string[]>(cachedStages || []);
   useEffect(() => {
-    if (cachedStages) return;
     api<{ name: string }[]>('/stage-templates')
       .then((list) => {
         cachedStages = list.map((s) => s.name);
         setStages(cachedStages);
       })
-      .catch(() => setStages([]));
+      .catch(() => {
+        if (!cachedStages) setStages([]);
+      });
   }, []);
   return stages;
 }

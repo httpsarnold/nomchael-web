@@ -49,11 +49,24 @@ export default function EstateDetailPage() {
 
   const [ledgerForm, setLedgerForm] = useState({
     kind: 'EXPENSE' as 'EXPENSE' | 'BORROWING' | 'REPAYMENT',
+    expenseCategory: 'COMPANY' as 'COMPANY' | 'PROJECT',
+    projectId: '',
     amount: '',
     partyName: '',
     description: '',
   });
   const [statement, setStatement] = useState<any>(null);
+
+  function resetLedgerForm() {
+    setLedgerForm({
+      kind: 'EXPENSE',
+      expenseCategory: 'COMPANY',
+      projectId: '',
+      amount: '',
+      partyName: '',
+      description: '',
+    });
+  }
 
   async function load() {
     const e = await api(`/estates/${id}`);
@@ -132,6 +145,14 @@ export default function EstateDetailPage() {
     setError('');
     setInfo('');
     try {
+      if (ledgerForm.kind === 'EXPENSE') {
+        if (!ledgerForm.description.trim()) {
+          throw new Error('Say what the expense was for.');
+        }
+        if (ledgerForm.expenseCategory === 'PROJECT' && !ledgerForm.projectId) {
+          throw new Error('Choose the house this project expense belongs to.');
+        }
+      }
       const st = await api(`/estates/${id}/ledger`, {
         method: 'POST',
         body: JSON.stringify({
@@ -139,11 +160,17 @@ export default function EstateDetailPage() {
           amountCents: Math.round(Number(ledgerForm.amount) * 100),
           partyName: ledgerForm.partyName.trim() || undefined,
           description: ledgerForm.description.trim() || undefined,
+          expenseCategory:
+            ledgerForm.kind === 'EXPENSE' ? ledgerForm.expenseCategory : undefined,
+          projectId:
+            ledgerForm.kind === 'EXPENSE' && ledgerForm.expenseCategory === 'PROJECT'
+              ? ledgerForm.projectId
+              : undefined,
         }),
       });
       setStatement(st);
       await load();
-      setLedgerForm({ kind: 'EXPENSE', amount: '', partyName: '', description: '' });
+      resetLedgerForm();
       setInfo(
         ledgerForm.kind === 'BORROWING'
           ? 'Borrowing recorded. They must repay (shown as debtor of this estate).'
@@ -277,7 +304,8 @@ export default function EstateDetailPage() {
           </p>
 
           <div className="panel" style={{ marginBottom: '1rem' }}>
-            <h3>Estate statement (trends)</h3>
+            <h3>Estate accounts</h3>
+            <h4 style={{ marginBottom: '0.5rem' }}>Labour account</h4>
             <div className="grid grid-3">
               <div>
                 <div className="muted">Labour quoted</div>
@@ -290,11 +318,11 @@ export default function EstateDetailPage() {
                 </strong>
               </div>
               <div>
-                <div className="muted">Net due (after discount)</div>
+                <div className="muted">Net labour due</div>
                 <strong>{money(t.netDueCents)}</strong>
               </div>
               <div>
-                <div className="muted">Cash received (DR income)</div>
+                <div className="muted">Labour cash received</div>
                 <strong>{money(t.cashReceivedCents)}</strong>
               </div>
               <div>
@@ -302,16 +330,36 @@ export default function EstateDetailPage() {
                 <strong>{money(t.labourUsedCents || 0)}</strong>
               </div>
               <div>
+                <div className="muted">Project expenses</div>
+                <strong>{money(t.projectExpensesCents || 0)}</strong>
+              </div>
+              <div>
                 <div className="muted">Other fund uses</div>
                 <strong>{money(t.otherFundUsesCents || 0)}</strong>
               </div>
               <div>
-                <div className="muted">Project expenses</div>
-                <strong>{money(t.expensesCents || 0)}</strong>
+                <div className="muted">Borrowed (outstanding)</div>
+                <strong>{money(t.borrowingsOutstandingCents || 0)}</strong>
               </div>
               <div>
-                <div className="muted">Borrowed from estate (outstanding)</div>
-                <strong>{money(t.borrowingsOutstandingCents || 0)}</strong>
+                <div className="muted">Labour account balance</div>
+                <strong>{money(t.labourBalanceCents ?? 0)}</strong>
+              </div>
+            </div>
+
+            <h4 style={{ margin: '1rem 0 0.5rem' }}>Company / profit account</h4>
+            <div className="grid grid-3">
+              <div>
+                <div className="muted">Profit earned</div>
+                <strong>{money(t.profitEarnedCents ?? 0)}</strong>
+              </div>
+              <div>
+                <div className="muted">Company expenses</div>
+                <strong>{money(t.companyExpensesCents || 0)}</strong>
+              </div>
+              <div>
+                <div className="muted">Profit left</div>
+                <strong>{money(t.profitBalanceCents ?? 0)}</strong>
               </div>
               <div>
                 <div className="muted">Cash at hand (on ground)</div>
@@ -323,8 +371,9 @@ export default function EstateDetailPage() {
               </div>
             </div>
             <p className="muted" style={{ marginTop: '0.75rem' }}>
-              Quoted − discount = net due. Cash in − labour used − expenses − borrowings + repayments
-              = cash at hand. People who borrow from this estate owe it back (debtors of the estate).
+              Project expenses come from the labour account. Company expenses come from profit
+              (net labour due − labour used − project expenses). Cash at hand = labour balance −
+              company expenses. Borrowings come from the labour pot and must be repaid.
             </p>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
               <button
@@ -381,10 +430,11 @@ export default function EstateDetailPage() {
           </div>
 
           <div className="panel" style={{ marginBottom: '1rem' }}>
-            <h3>Expenses &amp; borrowings (from this estate pot)</h3>
+            <h3>Expenses &amp; borrowings</h3>
             <p className="muted">
-              Record money taken from this estate’s cash for site expenses, or when someone borrows
-              from the project (they must repay).
+              Project expense comes from the labour account. Company expense comes from the profit
+              account. Write what each expense was for. Borrowings still come from the labour pot
+              and must be repaid.
             </p>
             <form className="form grid grid-2" onSubmit={saveLedger}>
               <label>
@@ -398,7 +448,7 @@ export default function EstateDetailPage() {
                     })
                   }
                 >
-                  <option value="EXPENSE">Expense (where money went)</option>
+                  <option value="EXPENSE">Expense</option>
                   <option value="BORROWING">Borrowing (must repay)</option>
                   <option value="REPAYMENT">Repayment received</option>
                 </select>
@@ -414,26 +464,92 @@ export default function EstateDetailPage() {
                   onChange={(e) => setLedgerForm({ ...ledgerForm, amount: e.target.value })}
                 />
               </label>
-              <label>
-                {ledgerForm.kind === 'EXPENSE' ? 'Paid to / where it went' : 'Person name'}
-                <input
-                  required={ledgerForm.kind !== 'EXPENSE'}
-                  value={ledgerForm.partyName}
-                  onChange={(e) => setLedgerForm({ ...ledgerForm, partyName: e.target.value })}
-                  placeholder={
-                    ledgerForm.kind === 'EXPENSE' ? 'e.g. Cement supplier' : 'e.g. John (borrower)'
-                  }
-                />
-              </label>
-              <label>
-                Note
-                <input
-                  value={ledgerForm.description}
-                  onChange={(e) =>
-                    setLedgerForm({ ...ledgerForm, description: e.target.value })
-                  }
-                />
-              </label>
+              {ledgerForm.kind === 'EXPENSE' && (
+                <>
+                  <label>
+                    Expense category
+                    <select
+                      value={ledgerForm.expenseCategory}
+                      onChange={(e) =>
+                        setLedgerForm({
+                          ...ledgerForm,
+                          expenseCategory: e.target.value as 'COMPANY' | 'PROJECT',
+                          projectId:
+                            e.target.value === 'PROJECT' ? ledgerForm.projectId : '',
+                        })
+                      }
+                    >
+                      <option value="COMPANY">Company expense (from profit)</option>
+                      <option value="PROJECT">Project expense (from labour)</option>
+                    </select>
+                  </label>
+                  {ledgerForm.expenseCategory === 'PROJECT' && (
+                    <label>
+                      House / project
+                      <select
+                        required
+                        value={ledgerForm.projectId}
+                        onChange={(e) =>
+                          setLedgerForm({ ...ledgerForm, projectId: e.target.value })
+                        }
+                      >
+                        <option value="">Select house</option>
+                        {(estate.projects || []).map((h: any) => (
+                          <option key={h.id} value={h.id}>
+                            {h.name}
+                            {h.client?.name ? ` · ${h.client.name}` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <label style={{ gridColumn: '1 / -1' }}>
+                    What was this expense for?
+                    <input
+                      required
+                      value={ledgerForm.description}
+                      onChange={(e) =>
+                        setLedgerForm({ ...ledgerForm, description: e.target.value })
+                      }
+                      placeholder="e.g. Transport for cement, site toilet hire, fuel for generator"
+                    />
+                  </label>
+                  <label>
+                    Paid to (optional)
+                    <input
+                      value={ledgerForm.partyName}
+                      onChange={(e) =>
+                        setLedgerForm({ ...ledgerForm, partyName: e.target.value })
+                      }
+                      placeholder="e.g. Cement supplier"
+                    />
+                  </label>
+                </>
+              )}
+              {ledgerForm.kind !== 'EXPENSE' && (
+                <>
+                  <label>
+                    Person name
+                    <input
+                      required
+                      value={ledgerForm.partyName}
+                      onChange={(e) =>
+                        setLedgerForm({ ...ledgerForm, partyName: e.target.value })
+                      }
+                      placeholder="e.g. John (borrower)"
+                    />
+                  </label>
+                  <label>
+                    Note
+                    <input
+                      value={ledgerForm.description}
+                      onChange={(e) =>
+                        setLedgerForm({ ...ledgerForm, description: e.target.value })
+                      }
+                    />
+                  </label>
+                </>
+              )}
               <div style={{ gridColumn: '1 / -1' }}>
                 <button type="submit" className="btn" disabled={saving}>
                   Record on estate statement
@@ -448,8 +564,11 @@ export default function EstateDetailPage() {
                   <ul>
                     {(statement.expenses || []).map((x: any) => (
                       <li key={x.id}>
-                        {money(x.amountCents)} · {x.partyName || '—'}
-                        {x.description ? ` · ${x.description}` : ''}{' '}
+                        {money(x.amountCents)} ·{' '}
+                        {x.expenseCategory === 'PROJECT' ? 'Project' : 'Company'}
+                        {x.projectName ? ` · ${x.projectName}` : ''}
+                        {x.description ? ` · ${x.description}` : ''}
+                        {x.partyName ? ` · ${x.partyName}` : ''}{' '}
                         <button
                           type="button"
                           className="btn secondary"
@@ -484,29 +603,68 @@ export default function EstateDetailPage() {
               </div>
             )}
 
-            {statement?.lines && (
-              <div className="table-wrap" style={{ marginTop: '1rem' }}>
-                <h4>DR / CR movement</h4>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Section</th>
-                      <th>Description</th>
-                      <th>DR</th>
-                      <th>CR</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {statement.lines.map((l: any, i: number) => (
-                      <tr key={`${l.section}-${i}`}>
-                        <td>{l.section}</td>
-                        <td>{l.description}</td>
-                        <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
-                        <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+            {(statement?.labourAccount || statement?.companyAccount) && (
+              <div style={{ marginTop: '1rem' }}>
+                {statement.labourAccount && (
+                  <div className="table-wrap" style={{ marginBottom: '1rem' }}>
+                    <h4>
+                      Labour account DR / CR
+                      <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                        Balance {money(statement.labourAccount.balanceCents)}
+                      </span>
+                    </h4>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Section</th>
+                          <th>Description</th>
+                          <th>DR</th>
+                          <th>CR</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statement.labourAccount.lines.map((l: any, i: number) => (
+                          <tr key={`labour-${l.section}-${i}`}>
+                            <td>{l.section}</td>
+                            <td>{l.description}</td>
+                            <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
+                            <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {statement.companyAccount && (
+                  <div className="table-wrap">
+                    <h4>
+                      Company / profit account DR / CR
+                      <span className="muted" style={{ fontWeight: 400, marginLeft: 8 }}>
+                        Balance {money(statement.companyAccount.balanceCents)}
+                      </span>
+                    </h4>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Section</th>
+                          <th>Description</th>
+                          <th>DR</th>
+                          <th>CR</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {statement.companyAccount.lines.map((l: any, i: number) => (
+                          <tr key={`company-${l.section}-${i}`}>
+                            <td>{l.section}</td>
+                            <td>{l.description}</td>
+                            <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
+                            <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
               </div>
             )}
           </div>

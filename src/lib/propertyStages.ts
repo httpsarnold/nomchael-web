@@ -1,19 +1,24 @@
 /** Suggested construction stages by building / property type (mirrors @nomchael/shared). */
 
 const RESIDENTIAL_STAGES = [
-  'Site Clearing',
-  'Foundation',
-  'Slab',
-  'Walls',
-  'Roof Structure',
-  'Roof Covering',
-  'Windows & Doors',
-  'Plastering',
-  'Flooring',
-  'Plumbing',
-  'Electrical',
-  'Painting',
-  'Finishing',
+  'Land Clearing',
+  'Setting out',
+  'Trench excavation',
+  'Concrete Bases',
+  'Back filling and compacting Concrete Slab',
+  'Fixing of bases, columns and ground beams',
+  'Shuttering of bases columns and beams',
+  'Average level',
+  'Window level',
+  'Shuttering of ring beam',
+  'Steel fixing',
+  'Wall plate FF',
+  'Concrete roof deck 1',
+  'Concrete roof deck 2',
+  'Roof deck steel fixing 1',
+  'Roof deck steel fixing 2',
+  'Parapet and wall coping',
+  'Plumbing fix and supply',
 ];
 
 const WAREHOUSE_STAGES = [
