@@ -1,18 +1,51 @@
 'use client';
 
 import Link from 'next/link';
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { Fragment, FormEvent, useEffect, useRef, useState } from 'react';
 import { useParams } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { BusyOverlay, LoadingState } from '@/components/LoadingState';
 import { StageSelect, useStageOptions } from '@/components/StageSelect';
 import { api, downloadFile, money } from '@/lib/api';
+import {
+  quoteStageLabel,
+  quoteStageOptions,
+  resolveQuoteStage,
+  stageCompletionPercent,
+} from '@/lib/propertyStages';
+
+function StageCompletion({
+  stage,
+  templates,
+  quoteStages,
+}: {
+  stage: string;
+  templates: { name: string; sortOrder: number }[];
+  quoteStages: string[];
+}) {
+  const percent = stageCompletionPercent(stage, templates, quoteStages);
+  if (percent == null) return <span className="muted">Not set</span>;
+  return (
+    <div>
+      <div className="muted" style={{ fontSize: '0.8rem' }}>
+        {percent}%
+      </div>
+      <div className="progress" style={{ height: 8, minWidth: 72 }}>
+        <div className="progress-bar" style={{ width: `${percent}%`, background: '#16a34a' }} />
+      </div>
+    </div>
+  );
+}
 
 export default function EstateDetailPage() {
   const params = useParams();
   const id = String(params.id || '');
   const stages = useStageOptions();
   const [selected, setSelected] = useState<string[]>([]);
+  const [houseQuery, setHouseQuery] = useState('');
+  const [quoteFilter, setQuoteFilter] = useState('');
+  const [quotedOpen, setQuotedOpen] = useState(false);
+  const [discountsOpen, setDiscountsOpen] = useState(false);
   const [bulkStage, setBulkStage] = useState({ start: '__KEEP__', current: '__KEEP__' });
   const [stageReport, setStageReport] = useState<any>(null);
   const managePanelRef = useRef<HTMLDivElement>(null);
@@ -44,8 +77,17 @@ export default function EstateDetailPage() {
     catchupStageLabel: '',
     currentStageLabel: '',
     cashReceived: '',
+    estateBoqId: '',
   });
   const [showAdd, setShowAdd] = useState(false);
+  const [templates, setTemplates] = useState<{ name: string; sortOrder: number }[]>([]);
+  const [boqLinesOpen, setBoqLinesOpen] = useState(true);
+  const [boqDraft, setBoqDraft] = useState<{
+    id: string;
+    name: string;
+    lines: { sectionName: string; stageName: string; sortOrder: number; amount: string }[];
+  } | null>(null);
+  const [applyBoqId, setApplyBoqId] = useState('');
 
   const [ledgerForm, setLedgerForm] = useState({
     kind: 'EXPENSE' as 'EXPENSE' | 'BORROWING' | 'REPAYMENT',
@@ -134,7 +176,14 @@ export default function EstateDetailPage() {
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    Promise.all([load(), loadStatement(), loadStageReport()])
+    Promise.all([
+      load(),
+      loadStatement(),
+      loadStageReport(),
+      api<{ name: string; sortOrder: number }[]>('/stage-templates').then((list) =>
+        setTemplates(list),
+      ),
+    ])
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
   }, [id]);
@@ -193,8 +242,14 @@ export default function EstateDetailPage() {
       discount: String(Number(h.trail?.discountCents || 0) / 100),
       discountReason: h.discountReason || '',
       labourQuoted: String(Number(h.trail?.labourQuotedCents || 0) / 100),
-      startStage: h.catchupStageLabel || '',
-      currentStage: h.currentStageLabel || '',
+      startStage: resolveQuoteStage(
+        h.catchupStageLabel,
+        quoteStageOptions(estate?.boqs || []).map((stage) => stage.value),
+      ),
+      currentStage: resolveQuoteStage(
+        h.currentStageLabel,
+        quoteStageOptions(estate?.boqs || []).map((stage) => stage.value),
+      ),
     });
     setInfo('');
     setError('');
@@ -231,6 +286,38 @@ export default function EstateDetailPage() {
     }
   }
 
+  async function clearHouseBoq() {
+    if (!managing?.id || !managing.estateBoq?.name) return;
+    const quote = managing.estateBoq.name;
+    if (
+      !window.confirm(
+        `Remove ${quote} from this house? Labour quoted goes back to the amount before this quotation, and the building match is cleared.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api<any>(`/estates/${id}/houses/${managing.id}/boq`, { method: 'DELETE' });
+      setEstate(updated);
+      const house = (updated.projects || []).find((h: any) => h.id === managing.id);
+      if (house) {
+        setForm((prev) => ({
+          ...prev,
+          labourQuoted: String(Number(house.trail?.labourQuotedCents || 0) / 100),
+        }));
+      }
+      await loadStageReport();
+      setInfo(`${quote} removed from this house.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function addHouse(e: FormEvent) {
     e.preventDefault();
     setSaving(true);
@@ -243,9 +330,11 @@ export default function EstateDetailPage() {
           houseName: addForm.houseName.trim() || undefined,
           ownerName: addForm.ownerName.trim() || undefined,
           ownerPhone: addForm.ownerPhone.trim() || undefined,
-          labourQuotedCents: addForm.labourQuoted
-            ? Math.round(Number(addForm.labourQuoted) * 100)
-            : undefined,
+          labourQuotedCents: addForm.estateBoqId
+            ? undefined
+            : addForm.labourQuoted
+              ? Math.round(Number(addForm.labourQuoted) * 100)
+              : undefined,
           discountCents: Math.round(Number(addForm.discount || 0) * 100),
           discountReason: addForm.discountReason.trim() || undefined,
           catchupStageLabel: addForm.catchupStageLabel.trim() || undefined,
@@ -253,6 +342,7 @@ export default function EstateDetailPage() {
           cashReceivedCents: addForm.cashReceived
             ? Math.round(Number(addForm.cashReceived) * 100)
             : undefined,
+          estateBoqId: addForm.estateBoqId || undefined,
         }),
       });
       setEstate(updated);
@@ -268,6 +358,7 @@ export default function EstateDetailPage() {
         catchupStageLabel: '',
         currentStageLabel: '',
         cashReceived: '',
+        estateBoqId: '',
       });
       setInfo('New house added to this estate file.');
     } catch (err) {
@@ -279,6 +370,177 @@ export default function EstateDetailPage() {
 
   const t = estate?.trends;
   const managing = (estate?.projects || []).find((h: any) => h.id === managingId);
+
+  function blankBoqLines() {
+    return [{ sectionName: '', stageName: '', sortOrder: 1, amount: '' }];
+  }
+
+  function chargeCents(
+    lines: {
+      sortOrder: number;
+      amountCents?: number;
+      amount?: string;
+      stageName?: string;
+      sectionName?: string;
+    }[],
+    startStage: string,
+  ) {
+    const wanted = startStage.trim().toLowerCase();
+    const named = lines.find((l) => {
+      const label = quoteStageLabel(l.sectionName, l.stageName).toLowerCase();
+      return label === wanted || (l.stageName || '').toLowerCase() === wanted;
+    });
+    const startOrder = named ? named.sortOrder : null;
+    return lines.reduce((sum, line) => {
+      const cents =
+        line.amountCents !== undefined
+          ? Number(line.amountCents)
+          : Math.round(Number(line.amount || 0) * 100);
+      if (startOrder !== null && line.sortOrder < startOrder) return sum;
+      return sum + (Number.isFinite(cents) ? cents : 0);
+    }, 0);
+  }
+
+  function openBoq(boq?: any) {
+    setBoqLinesOpen(true);
+    if (!boq) {
+      setBoqDraft({ id: '', name: '', lines: blankBoqLines() });
+      return;
+    }
+    const lines = (boq.lines || []).map((l: any, i: number) => ({
+      sectionName: l.sectionName || '',
+      stageName: l.stageName,
+      sortOrder: l.sortOrder ?? i + 1,
+      amount: String(Number(l.amountCents) / 100),
+    }));
+    setBoqDraft({
+      id: boq.id,
+      name: boq.name || '',
+      lines: lines.length ? lines : blankBoqLines(),
+    });
+  }
+
+  async function saveBoq() {
+    if (!boqDraft) return;
+    if (!boqDraft.name.trim()) {
+      setError('Give the BOQ a name.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const body = JSON.stringify({
+        name: boqDraft.name.trim(),
+        lines: boqDraft.lines
+          .filter((l) => l.stageName.trim())
+          .map((l, i) => ({
+            sectionName: l.sectionName.trim() || undefined,
+            stageName: l.stageName.trim(),
+            sortOrder: i + 1,
+            amountCents: Math.round(Number(l.amount || 0) * 100),
+          })),
+      });
+      const saved = await api<any>(
+        boqDraft.id ? `/estates/${id}/boqs/${boqDraft.id}` : `/estates/${id}/boqs`,
+        { method: boqDraft.id ? 'PATCH' : 'POST', body },
+      );
+      await load();
+      setBoqDraft({ ...boqDraft, id: saved.id });
+      setInfo(
+        boqDraft.id
+          ? 'BOQ updated. Houses already using it keep their copied amounts.'
+          : 'BOQ saved. Apply it to the houses you want.',
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeBoq(boq: any) {
+    if (!window.confirm(`Delete BOQ "${boq.name}"? Houses already charged keep their copied stages.`)) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await api(`/estates/${id}/boqs/${boq.id}`, { method: 'DELETE' });
+      if (boqDraft?.id === boq.id) setBoqDraft(null);
+      await load();
+      setInfo('BOQ deleted.');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function applyBoq() {
+    if (!applyBoqId) {
+      setError('Choose a BOQ to apply.');
+      return;
+    }
+    if (!selected.length) {
+      setError('Tick the houses you want this BOQ applied to.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api(`/estates/${id}/boqs/${applyBoqId}/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ projectIds: selected }),
+      });
+      setEstate(updated);
+      const quoteName =
+        (estate?.boqs || []).find((b: any) => b.id === applyBoqId)?.name || 'Quotation';
+      setInfo(
+        `${quoteName} applied to ${selected.length} house${selected.length === 1 ? '' : 's'}. They are now in the ${quoteName} group.`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const addBoq = (estate?.boqs || []).find((b: any) => b.id === addForm.estateBoqId);
+  const addCharge = addBoq ? chargeCents(addBoq.lines || [], addForm.catchupStageLabel) : null;
+  const houseQueryText = houseQuery.trim().toLowerCase();
+  const quoteNames = (estate?.boqs || []).map((b: any) => b.name).filter(Boolean);
+  const hasUnquoted = (estate?.projects || []).some((h: any) => !h.estateBoq?.name);
+  const quotationFilters = [...quoteNames, ...(hasUnquoted ? ['No quotation'] : [])];
+  const visibleHouses = (estate?.projects || []).filter((h: any) => {
+    const quote = h.estateBoq?.name || 'No quotation';
+    if (quoteFilter && quote !== quoteFilter) return false;
+    if (!houseQueryText) return true;
+    const hay = [h.name, h.client?.name, h.code, String(h.unitNumber ?? ''), h.client?.phone]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(houseQueryText);
+  });
+  const housesByQuote = new Map<string, any[]>();
+  for (const house of visibleHouses) {
+    const quote = house.estateBoq?.name || 'No quotation';
+    const list = housesByQuote.get(quote) || [];
+    list.push(house);
+    housesByQuote.set(quote, list);
+  }
+  const houseGroups = [
+    ...quoteNames.filter((name: string) => housesByQuote.has(name)),
+    ...[...housesByQuote.keys()].filter((name) => !quoteNames.includes(name)),
+  ].map((name) => ({ name, houses: housesByQuote.get(name) || [] }));
+  const quoteChoices = quoteStageOptions(estate?.boqs || []);
+  const quoteStages = quoteChoices.map((stage) => stage.value);
+  const stageChoices = quoteChoices.length ? quoteChoices : stages;
+  const addStageChoices = addBoq?.lines?.length ? quoteStageOptions([addBoq]) : stageChoices;
+  const manageStageChoices = managing?.boqStages?.length
+    ? quoteStageOptions([{ lines: managing.boqStages }])
+    : stageChoices;
 
   return (
     <AppShell>
@@ -316,6 +578,10 @@ export default function EstateDetailPage() {
                 <strong style={{ color: t.discountCents ? '#b45309' : undefined }}>
                   {money(t.discountCents)}
                 </strong>
+              </div>
+              <div>
+                <div className="muted">Building match discount</div>
+                <strong>{money(t.buildingMatchDiscountCents || 0)}</strong>
               </div>
               <div>
                 <div className="muted">Net labour due</div>
@@ -372,8 +638,10 @@ export default function EstateDetailPage() {
             </div>
             <p className="muted" style={{ marginTop: '0.75rem' }}>
               Project expenses come from the labour account. Company expenses come from profit
-              (net labour due − labour used − project expenses). Cash at hand = labour balance −
-              company expenses. Borrowings come from the labour pot and must be repaid.
+              (net labour due − labour used − project expenses). Building match discount keeps
+              older houses at the labour amount already allocated when a stage BOQ is applied.
+              Cash at hand = labour balance − company expenses. Borrowings come from the labour pot
+              and must be repaid.
             </p>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
               <button
@@ -421,12 +689,211 @@ export default function EstateDetailPage() {
                     catchupStageLabel: '',
                     currentStageLabel: '',
                     cashReceived: '',
+                    estateBoqId: '',
                   });
                 }}
               >
                 Add another house
               </button>
             </div>
+          </div>
+
+          <div className="panel" style={{ marginBottom: '1rem' }}>
+            <h3>Stage BOQs</h3>
+            <p className="muted">
+              Tick the houses, select a quotation, then apply. Those houses move into that
+              quotation group. Stages before a house’s start stage are not charged. Editing a
+              quotation later does not change houses it was already applied to.
+            </p>
+            <div className="form grid grid-2" style={{ marginBottom: '0.75rem' }}>
+              <label>
+                Quotation
+                <select value={applyBoqId} onChange={(e) => setApplyBoqId(e.target.value)}>
+                  <option value="">Select a quotation</option>
+                  {(estate.boqs || []).map((b: any) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8 }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={saving || !applyBoqId || !selected.length}
+                  onClick={applyBoq}
+                >
+                  Apply{' '}
+                  {(estate.boqs || []).find((b: any) => b.id === applyBoqId)?.name || 'quotation'}{' '}
+                  to {selected.length} selected
+                </button>
+                <button type="button" className="btn secondary" onClick={() => openBoq()}>
+                  New BOQ
+                </button>
+              </div>
+            </div>
+            {(estate.boqs || []).length > 0 && (
+              <ul>
+                {(estate.boqs || []).map((b: any) => (
+                  <li key={b.id}>
+                    <strong>{b.name}</strong>
+                    <span className="muted">
+                      {' '}
+                      · {money((b.lines || []).reduce((s: number, l: any) => s + Number(l.amountCents), 0))}{' '}
+                      all stages
+                    </span>{' '}
+                    <button type="button" className="btn secondary" style={{ padding: '0.1rem 0.4rem' }} onClick={() => openBoq(b)}>
+                      Edit
+                    </button>{' '}
+                    <button type="button" className="btn secondary" style={{ padding: '0.1rem 0.4rem' }} onClick={() => removeBoq(b)}>
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {boqDraft && (
+              <div style={{ marginTop: '0.75rem' }}>
+                <label className="form">
+                  BOQ name
+                  <input
+                    value={boqDraft.name}
+                    placeholder="e.g. Cottage house"
+                    onChange={(e) => setBoqDraft({ ...boqDraft, name: e.target.value })}
+                  />
+                </label>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  style={{ marginTop: '0.5rem' }}
+                  aria-expanded={boqLinesOpen}
+                  onClick={() => setBoqLinesOpen((open) => !open)}
+                >
+                  {boqLinesOpen ? '▾ Hide lines' : '▸ Show lines'}
+                </button>
+                {boqLinesOpen && (
+                <>
+                <div className="table-wrap" style={{ marginTop: '0.5rem' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Section</th>
+                        <th>Description</th>
+                        <th style={{ width: 140 }}>Amount (US$)</th>
+                        <th style={{ width: 80 }}></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {boqDraft.lines.map((line, i) => (
+                        <tr key={i}>
+                          <td>
+                            <input
+                              value={line.sectionName}
+                              placeholder="e.g. Setting Out to Slab"
+                              onChange={(e) =>
+                                setBoqDraft({
+                                  ...boqDraft,
+                                  lines: boqDraft.lines.map((l, idx) =>
+                                    idx === i ? { ...l, sectionName: e.target.value } : l,
+                                  ),
+                                })
+                              }
+                              style={{ width: '100%' }}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              value={line.stageName}
+                              placeholder="e.g. Land Clearing"
+                              onChange={(e) =>
+                                setBoqDraft({
+                                  ...boqDraft,
+                                  lines: boqDraft.lines.map((l, idx) =>
+                                    idx === i ? { ...l, stageName: e.target.value } : l,
+                                  ),
+                                })
+                              }
+                              style={{ width: '100%' }}
+                            />
+                          </td>
+                          <td>
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={line.amount}
+                              onChange={(e) =>
+                                setBoqDraft({
+                                  ...boqDraft,
+                                  lines: boqDraft.lines.map((l, idx) =>
+                                    idx === i ? { ...l, amount: e.target.value } : l,
+                                  ),
+                                })
+                              }
+                              style={{ width: '100%' }}
+                            />
+                          </td>
+                          <td>
+                            <button
+                              type="button"
+                              className="btn secondary"
+                              style={{ padding: '0.2rem 0.5rem' }}
+                              onClick={() =>
+                                setBoqDraft({
+                                  ...boqDraft,
+                                  lines:
+                                    boqDraft.lines.length === 1
+                                      ? blankBoqLines()
+                                      : boqDraft.lines.filter((_, idx) => idx !== i),
+                                })
+                              }
+                            >
+                              Remove
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  style={{ marginBottom: '0.5rem' }}
+                  onClick={() =>
+                    setBoqDraft({
+                      ...boqDraft,
+                      lines: [
+                        ...boqDraft.lines,
+                        {
+                          sectionName: boqDraft.lines.at(-1)?.sectionName || '',
+                          stageName: '',
+                          sortOrder: boqDraft.lines.length + 1,
+                          amount: '',
+                        },
+                      ],
+                    })
+                  }
+                >
+                  + Add line
+                </button>
+                </>
+                )}
+                <p className="muted">
+                  Full BOQ {money(chargeCents(boqDraft.lines, ''))}. Houses are charged only from
+                  their start stage onward.
+                </p>
+                <div className="row-actions" style={{ gap: 8 }}>
+                  <button type="button" className="btn" disabled={saving} onClick={saveBoq}>
+                    Save BOQ
+                  </button>
+                  <button type="button" className="btn secondary" onClick={() => setBoqDraft(null)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="panel" style={{ marginBottom: '1rem' }}>
@@ -623,14 +1090,133 @@ export default function EstateDetailPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {statement.labourAccount.lines.map((l: any, i: number) => (
-                          <tr key={`labour-${l.section}-${i}`}>
-                            <td>{l.section}</td>
-                            <td>{l.description}</td>
-                            <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
-                            <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
-                          </tr>
-                        ))}
+                        {statement.labourAccount.lines.map((l: any, i: number) => {
+                          const quotedLine =
+                            l.section === 'CONTRACT' &&
+                            String(l.description || '').startsWith('Labour quoted');
+                          const discountLine =
+                            l.section === 'CONTRACT' &&
+                            String(l.description || '').startsWith('Discounts granted');
+                          const byQuote = new Map<string, any[]>();
+                          if (quotedLine) {
+                            for (const h of estate.projects || []) {
+                              const quote = h.estateBoq?.name || 'No quotation';
+                              const list = byQuote.get(quote) || [];
+                              list.push(h);
+                              byQuote.set(quote, list);
+                            }
+                          }
+                          const discounted = discountLine
+                            ? (estate.projects || []).filter(
+                                (h: any) => Number(h.trail?.discountCents || 0) > 0,
+                              )
+                            : [];
+                          return (
+                            <Fragment key={`labour-${l.section}-${i}`}>
+                              <tr>
+                                <td>{l.section}</td>
+                                <td>
+                                  {quotedLine ? (
+                                    <button
+                                      type="button"
+                                      className="btn secondary"
+                                      style={{ padding: '0.15rem 0.5rem' }}
+                                      aria-expanded={quotedOpen}
+                                      onClick={() => setQuotedOpen((open) => !open)}
+                                    >
+                                      {quotedOpen ? '▾' : '▸'} {l.description}
+                                    </button>
+                                  ) : discountLine ? (
+                                    <button
+                                      type="button"
+                                      className="btn secondary"
+                                      style={{ padding: '0.15rem 0.5rem' }}
+                                      aria-expanded={discountsOpen}
+                                      onClick={() => setDiscountsOpen((open) => !open)}
+                                    >
+                                      {discountsOpen ? '▾' : '▸'} {l.description}
+                                    </button>
+                                  ) : (
+                                    l.description
+                                  )}
+                                </td>
+                                <td>{l.debitCents ? money(l.debitCents) : '—'}</td>
+                                <td>{l.creditCents ? money(l.creditCents) : '—'}</td>
+                              </tr>
+                              {quotedLine &&
+                                quotedOpen &&
+                                [...byQuote.entries()].map(([quote, houses]) => (
+                                  <Fragment key={quote}>
+                                    <tr>
+                                      <td></td>
+                                      <td>
+                                        <strong>
+                                          {quote} · {houses.length} house{houses.length === 1 ? '' : 's'}
+                                        </strong>
+                                      </td>
+                                      <td></td>
+                                      <td>
+                                        {money(
+                                          houses.reduce(
+                                            (sum: number, h: any) =>
+                                              sum + Number(h.trail?.labourQuotedCents || 0),
+                                            0,
+                                          ),
+                                        )}
+                                      </td>
+                                    </tr>
+                                    {houses.map((h: any) => (
+                                      <tr key={h.id}>
+                                        <td></td>
+                                        <td style={{ paddingLeft: '1.25rem' }}>
+                                          {h.unitNumber}. {h.name}
+                                          {h.client?.name ? ` · ${h.client.name}` : ''}
+                                        </td>
+                                        <td></td>
+                                        <td>{money(h.trail?.labourQuotedCents || 0)}</td>
+                                      </tr>
+                                    ))}
+                                  </Fragment>
+                                ))}
+                              {discountLine && discountsOpen && (
+                                <>
+                                  <tr>
+                                    <td></td>
+                                    <td>
+                                      <strong>
+                                        {discounted.length} house{discounted.length === 1 ? '' : 's'}
+                                      </strong>
+                                    </td>
+                                    <td>
+                                      {money(
+                                        discounted.reduce(
+                                          (sum: number, h: any) =>
+                                            sum + Number(h.trail?.discountCents || 0),
+                                          0,
+                                        ),
+                                      )}
+                                    </td>
+                                    <td></td>
+                                  </tr>
+                                  {discounted.map((h: any) => (
+                                    <tr key={h.id}>
+                                      <td></td>
+                                      <td style={{ paddingLeft: '1.25rem' }}>
+                                        {h.unitNumber}. {h.name}
+                                        {h.client?.name ? ` · ${h.client.name}` : ''}
+                                        {h.discountReason ? (
+                                          <div className="muted">{h.discountReason}</div>
+                                        ) : null}
+                                      </td>
+                                      <td>{money(h.trail?.discountCents || 0)}</td>
+                                      <td></td>
+                                    </tr>
+                                  ))}
+                                </>
+                              )}
+                            </Fragment>
+                          );
+                        })}
                       </tbody>
                     </table>
                   </div>
@@ -709,7 +1295,7 @@ export default function EstateDetailPage() {
                 <label>
                   Stage when we received it
                   <StageSelect
-                    stages={stages}
+                    stages={addStageChoices}
                     value={addForm.catchupStageLabel}
                     onChange={(v) => setAddForm({ ...addForm, catchupStageLabel: v })}
                   />
@@ -717,11 +1303,25 @@ export default function EstateDetailPage() {
                 <label>
                   Stage it is at now
                   <StageSelect
-                    stages={stages}
+                    stages={addStageChoices}
                     value={addForm.currentStageLabel}
                     emptyLabel="Same as start stage"
                     onChange={(v) => setAddForm({ ...addForm, currentStageLabel: v })}
                   />
+                </label>
+                <label>
+                  Stage BOQ
+                  <select
+                    value={addForm.estateBoqId}
+                    onChange={(e) => setAddForm({ ...addForm, estateBoqId: e.target.value })}
+                  >
+                    <option value="">No BOQ (use labour amount below)</option>
+                    {(estate.boqs || []).map((b: any) => (
+                      <option key={b.id} value={b.id}>
+                        {b.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label>
                   Labour quoted
@@ -729,7 +1329,8 @@ export default function EstateDetailPage() {
                     type="number"
                     min="0"
                     step="0.01"
-                    value={addForm.labourQuoted}
+                    value={addForm.estateBoqId ? String((addCharge || 0) / 100) : addForm.labourQuoted}
+                    readOnly={!!addForm.estateBoqId}
                     onChange={(e) => setAddForm({ ...addForm, labourQuoted: e.target.value })}
                   />
                 </label>
@@ -819,6 +1420,7 @@ export default function EstateDetailPage() {
                     min="0"
                     step="0.01"
                     value={form.labourQuoted}
+                    readOnly={!!managing.boqStages?.length}
                     onChange={(e) => setForm({ ...form, labourQuoted: e.target.value })}
                   />
                 </label>
@@ -843,7 +1445,7 @@ export default function EstateDetailPage() {
                 <label>
                   Stage when we received it
                   <StageSelect
-                    stages={stages}
+                    stages={manageStageChoices}
                     value={form.startStage}
                     onChange={(v) => setForm({ ...form, startStage: v })}
                   />
@@ -851,17 +1453,66 @@ export default function EstateDetailPage() {
                 <label>
                   Stage it is at now
                   <StageSelect
-                    stages={stages}
+                    stages={manageStageChoices}
                     value={form.currentStage}
                     onChange={(v) => setForm({ ...form, currentStage: v })}
+                  />
+                  <StageCompletion
+                    stage={form.currentStage}
+                    templates={templates}
+                    quoteStages={manageStageChoices.map((stage) =>
+                      typeof stage === 'string' ? stage : stage.value,
+                    )}
                   />
                 </label>
                 <div style={{ gridColumn: '1 / -1' }}>
                   <p className="muted">
                     Current trail: quoted {money(managing.trail.labourQuotedCents)} − discount{' '}
-                    {money(managing.trail.discountCents)} = net {money(managing.trail.netDueCents)}.
-                    Owes {money(managing.trail.clientOwesCents)}.
+                    {money(managing.trail.discountCents)}
+                    {managing.trail.buildingMatchDiscountCents
+                      ? ` − building match ${money(managing.trail.buildingMatchDiscountCents)}`
+                      : ''}{' '}
+                    = net {money(managing.trail.netDueCents)}. Owes{' '}
+                    {money(managing.trail.clientOwesCents)}.
+                    {managing.estateBoq?.name ? ` Quotation: ${managing.estateBoq.name}.` : ''}
                   </p>
+                  {managing.estateBoq?.name && (
+                    <p>
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        disabled={saving}
+                        onClick={clearHouseBoq}
+                      >
+                        Remove quotation from this house
+                      </button>
+                    </p>
+                  )}
+                  {!!managing.boqStages?.length && (
+                    <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Section / description</th>
+                            <th>Amount</th>
+                            <th>Charge</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {managing.boqStages.map((s: any) => (
+                          <tr key={`${s.sectionName}-${s.stageName}-${s.sortOrder}`}>
+                            <td>
+                              {s.sectionName ? `${s.sectionName} · ` : ''}
+                              {s.stageName}
+                            </td>
+                              <td>{money(s.amountCents)}</td>
+                              <td>{s.included ? 'Charged' : 'Not charged (before start)'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
                   <button type="submit" className="btn" disabled={saving}>
                     Save house
                   </button>{' '}
@@ -874,7 +1525,7 @@ export default function EstateDetailPage() {
           {stageReport && (
             <div className="panel" style={{ marginBottom: '1rem' }}>
               <h3>Stage report (estate summary)</h3>
-              <div className="grid grid-3">
+              <div className="grid grid-4">
                 <div>
                   <div className="muted">Houses</div>
                   <strong>{stageReport.summary.houseCount}</strong>
@@ -886,6 +1537,14 @@ export default function EstateDetailPage() {
                 <div>
                   <div className="muted">Average stages advanced</div>
                   <strong>{stageReport.summary.averageStagesAdvanced ?? 'Not enough data'}</strong>
+                </div>
+                <div>
+                  <div className="muted">Average completion</div>
+                  <strong>
+                    {stageReport.summary.averageCompletionPercent != null
+                      ? `${stageReport.summary.averageCompletionPercent}%`
+                      : 'Not enough data'}
+                  </strong>
                 </div>
               </div>
               <div className="grid grid-2" style={{ marginTop: '1rem' }}>
@@ -966,12 +1625,12 @@ export default function EstateDetailPage() {
               Tick houses in the table below, then set the stage we received them at, the stage
               they are at now, or both. Use this again any time to reassign.
             </p>
-            <div className="form grid grid-3">
+            <div className="form grid grid-2">
               <label>
                 Start stage (when received)
                 <StageSelect
                   keepOption
-                  stages={stages}
+                  stages={stageChoices}
                   value={bulkStage.start}
                   emptyLabel="Clear (not set)"
                   onChange={(v) => setBulkStage({ ...bulkStage, start: v })}
@@ -981,13 +1640,13 @@ export default function EstateDetailPage() {
                 Current stage (now)
                 <StageSelect
                   keepOption
-                  stages={stages}
+                  stages={stageChoices}
                   value={bulkStage.current}
                   emptyLabel="Clear (not set)"
                   onChange={(v) => setBulkStage({ ...bulkStage, current: v })}
                 />
               </label>
-              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+              <div>
                 <button
                   type="button"
                   className="btn"
@@ -1003,9 +1662,45 @@ export default function EstateDetailPage() {
           <div className="panel">
             <h3>Houses</h3>
             <p className="muted">
-              Click Manage to rename the house, set the owner, change stages, or grant an individual
-              discount.
+              Houses are grouped by the quotation applied to them. Tick houses, choose the
+              quotation above, then apply. Click Manage to rename a house, set the owner, change
+              stages, or grant an individual discount.
             </p>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
+              <label style={{ maxWidth: 360, flex: '1 1 220px' }}>
+                Search by name
+                <input
+                  value={houseQuery}
+                  placeholder="House or owner name"
+                  onChange={(e) => setHouseQuery(e.target.value)}
+                />
+              </label>
+              <label style={{ maxWidth: 280, flex: '1 1 180px' }}>
+                Quotation
+                <select value={quoteFilter} onChange={(e) => setQuoteFilter(e.target.value)}>
+                  <option value="">All quotations</option>
+                  {quotationFilters.map((name) => (
+                    <option key={name} value={name}>
+                      {name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {(quoteFilter || houseQuery.trim()) && (
+                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    onClick={() => {
+                      setQuoteFilter('');
+                      setHouseQuery('');
+                    }}
+                  >
+                    Remove filter
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="table-wrap">
               <table>
                 <thead>
@@ -1015,22 +1710,28 @@ export default function EstateDetailPage() {
                         type="checkbox"
                         aria-label="Select all houses"
                         checked={
-                          !!estate.projects?.length &&
-                          selected.length === estate.projects.length
+                          visibleHouses.length > 0 &&
+                          visibleHouses.every((h: any) => selected.includes(h.id))
                         }
-                        onChange={(e) =>
-                          setSelected(
-                            e.target.checked ? estate.projects.map((h: any) => h.id) : [],
-                          )
-                        }
+                        onChange={(e) => {
+                          const ids = visibleHouses.map((h: any) => h.id);
+                          setSelected((prev) =>
+                            e.target.checked
+                              ? [...new Set([...prev, ...ids])]
+                              : prev.filter((id) => !ids.includes(id)),
+                          );
+                        }}
                       />
                     </th>
                     <th>#</th>
                     <th>House / Owner</th>
                     <th>Start stage</th>
                     <th>Current stage</th>
+                    <th>Complete</th>
+                    <th>BOQ</th>
                     <th>Quoted</th>
                     <th>Discount</th>
+                    <th>Building match</th>
                     <th>Net due</th>
                     <th>Cash in</th>
                     <th>Owes</th>
@@ -1038,7 +1739,25 @@ export default function EstateDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {(estate.projects || []).map((h: any) => (
+                  {visibleHouses.length === 0 && (
+                    <tr>
+                      <td colSpan={14} className="muted">
+                        No house matches.
+                      </td>
+                    </tr>
+                  )}
+                  {houseGroups.map((group) => (
+                    <Fragment key={group.name}>
+                      <tr>
+                        <td colSpan={14} style={{ background: '#f6f3ee' }}>
+                          <strong>{group.name}</strong>
+                          <span className="muted">
+                            {' '}
+                            · {group.houses.length} house{group.houses.length === 1 ? '' : 's'}
+                          </span>
+                        </td>
+                      </tr>
+                      {group.houses.map((h: any) => (
                     <tr
                       key={h.id}
                       style={{
@@ -1060,8 +1779,28 @@ export default function EstateDetailPage() {
                         <div>{h.client?.name}</div>
                         <div className="muted">{h.code}</div>
                       </td>
-                      <td>{h.catchupStageLabel || <span className="muted">Not set</span>}</td>
-                      <td>{h.currentStageLabel || <span className="muted">Not set</span>}</td>
+                      <td>
+                        {resolveQuoteStage(h.catchupStageLabel, quoteStages) || (
+                          <span className="muted">Not set</span>
+                        )}
+                      </td>
+                      <td>
+                        {resolveQuoteStage(h.currentStageLabel, quoteStages) || (
+                          <span className="muted">Not set</span>
+                        )}
+                      </td>
+                      <td>
+                        <StageCompletion
+                          stage={resolveQuoteStage(h.currentStageLabel, quoteStages)}
+                          templates={templates}
+                          quoteStages={
+                            h.boqStages?.length
+                              ? quoteStageOptions([{ lines: h.boqStages }]).map((stage) => stage.value)
+                              : quoteStages
+                          }
+                        />
+                      </td>
+                      <td>{h.estateBoq?.name || <span className="muted">None</span>}</td>
                       <td>{money(h.trail.labourQuotedCents)}</td>
                       <td>
                         {money(h.trail.discountCents)}
@@ -1069,6 +1808,7 @@ export default function EstateDetailPage() {
                           <div className="muted">{h.discountReason}</div>
                         ) : null}
                       </td>
+                      <td>{money(h.trail.buildingMatchDiscountCents || 0)}</td>
                       <td>{money(h.trail.netDueCents)}</td>
                       <td>{money(h.trail.cashReceivedCents)}</td>
                       <td>{money(h.trail.clientOwesCents)}</td>
@@ -1082,6 +1822,8 @@ export default function EstateDetailPage() {
                         </button>
                       </td>
                     </tr>
+                      ))}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>

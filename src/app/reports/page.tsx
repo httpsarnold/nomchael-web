@@ -273,6 +273,10 @@ export default function ReportsPage() {
                 <strong>{money(estateStatement.summary.netDueCents)}</strong>
               </div>
               <div>
+                <div className="muted">Building match discount</div>
+                <strong>{money(estateStatement.summary.buildingMatchDiscountCents || 0)}</strong>
+              </div>
+              <div>
                 <div className="muted">Labour cash received</div>
                 <strong>{money(estateStatement.summary.cashReceivedCents)}</strong>
               </div>

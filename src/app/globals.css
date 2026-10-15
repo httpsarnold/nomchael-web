@@ -470,9 +470,10 @@ h3 { font-size: 0.95rem; }
 }
 
 .grid { display: grid; gap: 0.9rem; }
-.grid-4 { grid-template-columns: repeat(4, 1fr); }
-.grid-3 { grid-template-columns: repeat(3, 1fr); }
-.grid-2 { grid-template-columns: repeat(2, 1fr); }
+.grid > * { min-width: 0; }
+.grid-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 
 .kpi, .panel, .stat-card, .action-card, .needs-card {
   background: var(--card);
@@ -746,11 +747,44 @@ label {
   font-weight: 600;
 }
 input, select, textarea {
+  width: 100%;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 10px;
   padding: 0.55rem 0.7rem;
   background: #fff;
   color: var(--ink);
+}
+.stage-search { position: relative; }
+.stage-search-list {
+  position: absolute;
+  z-index: 30;
+  left: 0;
+  right: 0;
+  top: calc(100% + 4px);
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  padding: 0.25rem;
+  list-style: none;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+.stage-search-list button {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 0.45rem 0.55rem;
+  color: var(--ink);
+  cursor: pointer;
+}
+.stage-search-list button:hover,
+.stage-search-list button.active {
+  background: var(--accent-soft);
 }
 .row-actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 

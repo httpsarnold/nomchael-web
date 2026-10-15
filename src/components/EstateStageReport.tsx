@@ -147,6 +147,7 @@ export function EstateStageReport({ initialEstateId = '' }: { initialEstateId?: 
                   <th>Owner</th>
                   <th>Start stage</th>
                   <th>Current stage</th>
+                  <th>Complete</th>
                   <th>Stages advanced</th>
                   <th>Stage updated</th>
                 </tr>
@@ -167,6 +168,7 @@ export function EstateStageReport({ initialEstateId = '' }: { initialEstateId?: 
                     </td>
                     <td>{r.startStage || <span className="muted">Not set</span>}</td>
                     <td>{r.currentStage || <span className="muted">Not set</span>}</td>
+                    <td>{r.completionPercent != null ? `${r.completionPercent}%` : <span className="muted">n/a</span>}</td>
                     <td>{r.stagesAdvanced ?? <span className="muted">n/a</span>}</td>
                     <td>
                       {r.currentStageUpdatedAt
