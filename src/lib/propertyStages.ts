@@ -134,11 +134,8 @@ const LEGACY_STAGES = [
   'Finishing',
 ];
 
-export function quoteStageLabel(section?: string | null, description?: string | null) {
-  const name = (description || '').trim();
-  const sectionName = (section || '').trim();
-  if (!name) return '';
-  return sectionName ? `${sectionName} · ${name}` : name;
+export function quoteStageLabel(_section?: string | null, description?: string | null) {
+  return (description || '').trim();
 }
 
 function quoteDescription(stage: string) {
@@ -175,22 +172,28 @@ function pickQuoteStage(
   return pick === 'first' ? matches[0] : matches[matches.length - 1];
 }
 
-/** Map a stored stage onto a quotation stage (section · description) when the estate has a BOQ. */
+/** Map a stored stage onto a quotation stage when the estate has a BOQ. */
 export function resolveQuoteStage(label: string | null | undefined, quoteStages: string[]) {
   const raw = (label || '').trim();
   if (!raw || !quoteStages.length) return raw;
   const lower = raw.toLowerCase();
   const exact = quoteStages.find((stage) => stage.toLowerCase() === lower);
   if (exact) return exact;
-  const alias = QUOTE_STAGE_ALIASES[lower];
-  if (alias) {
+  const bare = quoteDescription(raw);
+  const keys = bare !== lower ? [lower, bare] : [lower];
+  for (const key of keys) {
+    const alias = QUOTE_STAGE_ALIASES[key];
+    if (!alias) continue;
     const aliased = pickQuoteStage(quoteStages, alias.description, alias.pick);
     if (aliased) return aliased;
   }
-  const described = pickQuoteStage(quoteStages, lower, 'last');
-  if (described) return described;
-  const stripped = lower.replace(/ \d+$/, '');
-  if (stripped !== lower) {
+  for (const key of keys) {
+    const described = pickQuoteStage(quoteStages, key, 'last');
+    if (described) return described;
+  }
+  for (const key of keys) {
+    const stripped = key.replace(/ \d+$/, '');
+    if (stripped === key) continue;
     const numbered = pickQuoteStage(quoteStages, stripped, 'first');
     if (numbered) return numbered;
   }

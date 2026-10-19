@@ -8,7 +8,6 @@ import { BusyOverlay, LoadingState } from '@/components/LoadingState';
 import { StageSelect, useStageOptions } from '@/components/StageSelect';
 import { api, downloadFile, money } from '@/lib/api';
 import {
-  quoteStageLabel,
   quoteStageOptions,
   resolveQuoteStage,
   stageCompletionPercent,
@@ -386,9 +385,11 @@ export default function EstateDetailPage() {
     startStage: string,
   ) {
     const wanted = startStage.trim().toLowerCase();
+    const wantedStage =
+      wanted.split(' · ').length > 1 ? wanted.split(' · ').slice(1).join(' · ').trim() : wanted;
     const named = lines.find((l) => {
-      const label = quoteStageLabel(l.sectionName, l.stageName).toLowerCase();
-      return label === wanted || (l.stageName || '').toLowerCase() === wanted;
+      const stage = (l.stageName || '').trim().toLowerCase();
+      return stage === wanted || stage === wantedStage;
     });
     const startOrder = named ? named.sortOrder : null;
     return lines.reduce((sum, line) => {
@@ -435,7 +436,6 @@ export default function EstateDetailPage() {
         lines: boqDraft.lines
           .filter((l) => l.stageName.trim())
           .map((l, i) => ({
-            sectionName: l.sectionName.trim() || undefined,
             stageName: l.stageName.trim(),
             sortOrder: i + 1,
             amountCents: Math.round(Number(l.amount || 0) * 100),
@@ -778,8 +778,7 @@ export default function EstateDetailPage() {
                   <table>
                     <thead>
                       <tr>
-                        <th>Section</th>
-                        <th>Description</th>
+                        <th>Stage</th>
                         <th style={{ width: 140 }}>Amount (US$)</th>
                         <th style={{ width: 80 }}></th>
                       </tr>
@@ -787,21 +786,6 @@ export default function EstateDetailPage() {
                     <tbody>
                       {boqDraft.lines.map((line, i) => (
                         <tr key={i}>
-                          <td>
-                            <input
-                              value={line.sectionName}
-                              placeholder="e.g. Setting Out to Slab"
-                              onChange={(e) =>
-                                setBoqDraft({
-                                  ...boqDraft,
-                                  lines: boqDraft.lines.map((l, idx) =>
-                                    idx === i ? { ...l, sectionName: e.target.value } : l,
-                                  ),
-                                })
-                              }
-                              style={{ width: '100%' }}
-                            />
-                          </td>
                           <td>
                             <input
                               value={line.stageName}
@@ -867,7 +851,7 @@ export default function EstateDetailPage() {
                       lines: [
                         ...boqDraft.lines,
                         {
-                          sectionName: boqDraft.lines.at(-1)?.sectionName || '',
+                          sectionName: '',
                           stageName: '',
                           sortOrder: boqDraft.lines.length + 1,
                           amount: '',
@@ -1493,7 +1477,7 @@ export default function EstateDetailPage() {
                       <table>
                         <thead>
                           <tr>
-                            <th>Section / description</th>
+                            <th>Stage</th>
                             <th>Amount</th>
                             <th>Charge</th>
                           </tr>
@@ -1501,10 +1485,7 @@ export default function EstateDetailPage() {
                         <tbody>
                           {managing.boqStages.map((s: any) => (
                           <tr key={`${s.sectionName}-${s.stageName}-${s.sortOrder}`}>
-                            <td>
-                              {s.sectionName ? `${s.sectionName} · ` : ''}
-                              {s.stageName}
-                            </td>
+                            <td>{s.stageName}</td>
                               <td>{money(s.amountCents)}</td>
                               <td>{s.included ? 'Charged' : 'Not charged (before start)'}</td>
                             </tr>
