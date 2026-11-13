@@ -78,7 +78,10 @@ const groups: NavGroup[] = [
     id: 'admin',
     label: 'Administration',
     summary: 'General',
-    items: [{ href: '/admin/users', label: 'Users & Levels', locked: ESTATE_FOCUS_MODE }],
+    items: [
+      { href: '/admin/users', label: 'Users & Levels', locked: ESTATE_FOCUS_MODE },
+      { href: '/admin/backup', label: 'Database backup' },
+    ],
   },
 ];
 
