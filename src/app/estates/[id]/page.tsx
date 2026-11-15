@@ -8,10 +8,180 @@ import { BusyOverlay, LoadingState } from '@/components/LoadingState';
 import { StageSelect, useStageOptions } from '@/components/StageSelect';
 import { api, downloadFile, money } from '@/lib/api';
 import {
+  boqStageValues,
   quoteStageOptions,
   resolveQuoteStage,
   stageCompletionPercent,
 } from '@/lib/propertyStages';
+
+/**
+ * The stages a house has. A house with a BOQ has exactly that BOQ's stages; a house
+ * without one follows the estate's stages.
+ */
+function houseStageValues(house: any, estateStages: string[]) {
+  return house?.boqStages?.length ? boqStageValues(house.boqStages) : estateStages;
+}
+
+/** A house's stored stage, shown as a stage on its own BOQ (blank if the BOQ does not have it). */
+function houseStage(house: any, label: string | null | undefined, estateStages: string[]) {
+  return resolveQuoteStage(label, houseStageValues(house, estateStages), !!house?.boqStages?.length);
+}
+
+function stageMark(stages: { stageName: string }[], label: string | null | undefined) {
+  const names = stages.map((stage) => stage.stageName);
+  const resolved = resolveQuoteStage(label, names, names.length > 0);
+  if (!resolved) return -1;
+  let index = -1;
+  stages.forEach((stage, i) => {
+    if (stage.stageName === resolved) index = i;
+  });
+  if (index >= 0) return index;
+  return stages.findIndex((stage) => stage.stageName.toLowerCase() === resolved.toLowerCase());
+}
+
+function ClientStatement({ house, ledger }: { house: any; ledger: any[] }) {
+  const stages = [...(house.boqStages || [])].sort(
+    (a: { sortOrder: number }, b: { sortOrder: number }) => a.sortOrder - b.sortOrder,
+  );
+  const expenses = [...(house.expenseStages || [])].sort(
+    (a: { sortOrder: number }, b: { sortOrder: number }) => a.sortOrder - b.sortOrder,
+  );
+  const nowIndex = stageMark(stages, house.currentStageLabel);
+  const startIndex = stages.findIndex((stage: { included: boolean }) => stage.included);
+  const currentIsBeforeStart = nowIndex >= 0 && startIndex >= 0 && nowIndex < startIndex;
+  const mark = (index: number, included: boolean) => {
+    if (!included) return 'before';
+    if (nowIndex < 0 || currentIsBeforeStart) return 'left';
+    if (index < nowIndex) return 'done';
+    if (index === nowIndex) return 'now';
+    return 'left';
+  };
+  const expenseNow = stageMark(expenses, house.currentStageLabel);
+  const expenseStart = expenses.findIndex((stage: { included: boolean }) => stage.included);
+  const expenseSplit = expenseNow >= 0 && !currentIsBeforeStart;
+  const expenseMark = (index: number, included: boolean) => {
+    if (!included) return 'before';
+    if (!expenseSplit) return 'job';
+    if (expenseStart >= 0 && expenseNow < expenseStart) return 'left';
+    if (index < expenseNow) return 'done';
+    if (index === expenseNow) return 'now';
+    return 'left';
+  };
+  const sum = (rows: { amountCents?: number | null; included?: boolean }[], which: string) =>
+    rows.reduce((total, row, index) => {
+      if (expenseMark(index, !!row.included) !== which) return total;
+      return total + Number(row.amountCents || 0);
+    }, 0);
+  const doneCount = stages.filter(
+    (stage: { included: boolean }, index: number) => mark(index, stage.included) === 'done',
+  ).length;
+  const leftCount = stages.filter(
+    (stage: { included: boolean }, index: number) => mark(index, stage.included) === 'left',
+  ).length;
+  const jobCount = stages.filter((stage: { included: boolean }) => stage.included).length;
+  const food = (house.groupExpenses || []).reduce(
+    (total: number, expense: { amountCents: number }) => total + Number(expense.amountCents || 0),
+    0,
+  );
+  const oneOff = (ledger || [])
+    .filter(
+      (entry) =>
+        entry.kind === 'EXPENSE' &&
+        entry.expenseCategory === 'PROJECT' &&
+        entry.projectId === house.id,
+    )
+    .reduce((total: number, entry: { amountCents: number }) => total + Number(entry.amountCents || 0), 0);
+  const incurred = (expenseSplit ? sum(expenses, 'done') + sum(expenses, 'now') : 0) + food + oneOff;
+  const stillToCome = expenseSplit ? sum(expenses, 'left') : 0;
+  const onTheJob = expenses.reduce(
+    (total: number, stage: { included: boolean; amountCents?: number | null }) =>
+      stage.included ? total + Number(stage.amountCents || 0) : total,
+    0,
+  );
+  const leftNames = stages
+    .filter((stage: { included: boolean; stageName: string }, index: number) => mark(index, stage.included) === 'left')
+    .map((stage: { stageName: string }) => stage.stageName);
+  const quoteName =
+    house.estateBoq?.name || (house.expenseList?.name || '').replace(/ expenses$/i, '');
+  const started = houseStage(house, house.catchupStageLabel, []);
+  const now = houseStage(house, house.currentStageLabel, []);
+
+  return (
+    <div className="client-statement">
+      <h4 style={{ margin: 0 }}>
+        Client statement · {house.name}
+        {house.client?.name ? ` · ${house.client.name}` : ''}
+      </h4>
+      <p className="muted" style={{ margin: 0 }}>
+        {quoteName
+          ? `Quotation ${quoteName}. Started at ${started || 'the first stage'}.`
+          : stages.length
+            ? `Started at ${started || 'the first stage'}.`
+            : 'No quotation. The bill is the amount entered for this house.'}{' '}
+        {now ? `Now at ${now}.` : 'The stage it is at now is not set.'}
+      </p>
+      {!!stages.length && (
+        <>
+          <div className="stage-strip" aria-hidden="true">
+            {stages.map((stage: { stageName: string; sortOrder: number; included: boolean }, index: number) => (
+              <span
+                key={`${stage.sortOrder}-${stage.stageName}`}
+                className={mark(index, stage.included)}
+                title={stage.stageName}
+              />
+            ))}
+          </div>
+          <div className="stage-legend">
+            <span><i style={{ background: '#e7e5e4' }} /> Before the start</span>
+            <span><i style={{ background: '#15803d' }} /> Done · {doneCount}</span>
+            <span><i style={{ background: '#b45309' }} /> Now</span>
+            <span><i style={{ background: '#d6d3d1' }} /> Left · {leftCount}</span>
+          </div>
+          <p style={{ margin: 0 }}>
+            {jobCount} stages are on this job. {leftCount === 0 ? 'Nothing is left.' : `${leftCount} still to do.`}
+            {leftNames.length > 0 ? ` Next: ${leftNames.slice(0, 4).join(', ')}${leftNames.length > 4 ? '…' : ''}.` : ''}
+          </p>
+        </>
+      )}
+      {currentIsBeforeStart && (
+        <p style={{ margin: 0 }}>
+          The stage it is at now is before the stage this house started at. Set the current stage to
+          where the house actually is. The bill is not changed by that.
+        </p>
+      )}
+      <div className="progress-visual-kpis">
+        <div>
+          <div className="label">Bill</div>
+          <div className="value">{money(house.trail?.labourQuotedCents || 0)}</div>
+        </div>
+        <div>
+          <div className="label">Discount</div>
+          <div className="value">{money(house.trail?.discountCents || 0)}</div>
+        </div>
+        <div>
+          <div className="label">Client owes</div>
+          <div className="value">{money(house.trail?.clientOwesCents || 0)}</div>
+        </div>
+        <div>
+          <div className="label">Expenses incurred</div>
+          <div className="value">{money(incurred)}</div>
+        </div>
+        <div>
+          <div className="label">{expenseSplit ? 'Expenses left' : 'Stage expenses on this job'}</div>
+          <div className="value">{money(expenseSplit ? stillToCome : onTheJob)}</div>
+        </div>
+      </div>
+      {(food > 0 || oneOff > 0) && (
+        <p className="muted" style={{ margin: 0 }}>
+          Incurred includes {food > 0 ? `food ${money(food)}` : ''}
+          {food > 0 && oneOff > 0 ? ' and ' : ''}
+          {oneOff > 0 ? `other house expenses ${money(oneOff)}` : ''}. Food is not a stage, so it stays
+          for the whole job.
+        </p>
+      )}
+    </div>
+  );
+}
 
 function StageCompletion({
   stage,
@@ -45,6 +215,8 @@ export default function EstateDetailPage() {
   const [quoteFilter, setQuoteFilter] = useState('');
   const [quotedOpen, setQuotedOpen] = useState(false);
   const [discountsOpen, setDiscountsOpen] = useState(false);
+  const [stageExpensesOpen, setStageExpensesOpen] = useState(false);
+  const [groupExpensesOpen, setGroupExpensesOpen] = useState(false);
   const [bulkStage, setBulkStage] = useState({ start: '__KEEP__', current: '__KEEP__' });
   const [stageReport, setStageReport] = useState<any>(null);
   const managePanelRef = useRef<HTMLDivElement>(null);
@@ -65,6 +237,7 @@ export default function EstateDetailPage() {
     startStage: '',
     currentStage: '',
   });
+  const [cashPayment, setCashPayment] = useState('');
 
   const [addForm, setAddForm] = useState({
     houseName: '',
@@ -87,11 +260,26 @@ export default function EstateDetailPage() {
     lines: { sectionName: string; stageName: string; sortOrder: number; amount: string }[];
   } | null>(null);
   const [applyBoqId, setApplyBoqId] = useState('');
+  const [expenseBoqId, setExpenseBoqId] = useState('');
+  const [applyExpenseListId, setApplyExpenseListId] = useState('');
+  const [expenseDraft, setExpenseDraft] = useState<{
+    id: string;
+    name: string;
+    estateBoqId: string;
+    lines: {
+      sectionName: string;
+      stageName: string;
+      sortOrder: number;
+      amount: string;
+      quoteCents: number;
+    }[];
+  } | null>(null);
 
   const [ledgerForm, setLedgerForm] = useState({
     kind: 'EXPENSE' as 'EXPENSE' | 'BORROWING' | 'REPAYMENT',
-    expenseCategory: 'COMPANY' as 'COMPANY' | 'PROJECT',
+    expenseCategory: 'COMPANY' as 'COMPANY' | 'PROJECT' | 'GROUP',
     projectId: '',
+    estateBoqId: '',
     amount: '',
     partyName: '',
     description: '',
@@ -103,6 +291,7 @@ export default function EstateDetailPage() {
       kind: 'EXPENSE',
       expenseCategory: 'COMPANY',
       projectId: '',
+      estateBoqId: '',
       amount: '',
       partyName: '',
       description: '',
@@ -200,6 +389,31 @@ export default function EstateDetailPage() {
         if (ledgerForm.expenseCategory === 'PROJECT' && !ledgerForm.projectId) {
           throw new Error('Choose the house this project expense belongs to.');
         }
+        if (ledgerForm.expenseCategory === 'GROUP' && !ledgerForm.estateBoqId) {
+          throw new Error('Choose the quotation this group expense applies to.');
+        }
+      }
+      if (ledgerForm.kind === 'EXPENSE' && ledgerForm.expenseCategory === 'GROUP') {
+        const quoteName =
+          (estate?.boqs || []).find((b: any) => b.id === ledgerForm.estateBoqId)?.name ||
+          'that quotation';
+        const updated = await api<any>(`/estates/${id}/group-expenses`, {
+          method: 'POST',
+          body: JSON.stringify({
+            estateBoqId: ledgerForm.estateBoqId,
+            description: ledgerForm.description.trim(),
+            amountCents: Math.round(Number(ledgerForm.amount) * 100),
+            partyName: ledgerForm.partyName.trim() || undefined,
+          }),
+        });
+        setEstate(updated);
+        const statementNext = await api(`/estates/${id}/statement`);
+        setStatement(statementNext);
+        resetLedgerForm();
+        setInfo(
+          `${ledgerForm.description.trim()} applied to every house on ${quoteName}. Each house is charged the same amount.`,
+        );
+        return;
       }
       const st = await api(`/estates/${id}/ledger`, {
         method: 'POST',
@@ -241,17 +455,47 @@ export default function EstateDetailPage() {
       discount: String(Number(h.trail?.discountCents || 0) / 100),
       discountReason: h.discountReason || '',
       labourQuoted: String(Number(h.trail?.labourQuotedCents || 0) / 100),
-      startStage: resolveQuoteStage(
+      startStage: houseStage(
+        h,
         h.catchupStageLabel,
         quoteStageOptions(estate?.boqs || []).map((stage) => stage.value),
       ),
-      currentStage: resolveQuoteStage(
-        h.currentStageLabel,
-        quoteStageOptions(estate?.boqs || []).map((stage) => stage.value),
-      ),
+      currentStage: h.currentStageLabel || '',
     });
+    setCashPayment('');
     setInfo('');
     setError('');
+  }
+
+  async function recordCashPayment(e: FormEvent) {
+    e.preventDefault();
+    if (!managingId) return;
+    const amountCents = Math.round(Number(cashPayment || 0) * 100);
+    if (!Number.isFinite(amountCents) || amountCents < 1) {
+      setError('Enter the amount this client paid (more than 0).');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      await api('/payments', {
+        method: 'POST',
+        body: JSON.stringify({
+          projectId: managingId,
+          amountCents,
+          purpose: 'LABOUR',
+          notes: 'Estate house payment',
+        }),
+      });
+      await load();
+      setCashPayment('');
+      setInfo(`Recorded ${money(amountCents)} cash received for this house.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function saveManage(e: FormEvent) {
@@ -290,7 +534,7 @@ export default function EstateDetailPage() {
     const quote = managing.estateBoq.name;
     if (
       !window.confirm(
-        `Remove ${quote} from this house? Labour quoted goes back to the amount before this quotation, and the building match is cleared.`,
+        `Remove ${quote} from this house? The quotation stages come off this house. The labour amount stays as it is now, and you can change it.`,
       )
     ) {
       return;
@@ -494,12 +738,244 @@ export default function EstateDetailPage() {
         method: 'POST',
         body: JSON.stringify({ projectIds: selected }),
       });
+      // The BOQ is the whole project. Stages the house had that this BOQ has no match for
+      // are cleared, so say which houses need a stage set again.
+      const clearedHouses = (estate?.projects || [])
+        .filter((before: any) => selected.includes(before.id))
+        .filter((before: any) => {
+          const after = (updated as any).projects?.find((h: any) => h.id === before.id);
+          return (
+            after &&
+            ((before.catchupStageLabel && !after.catchupStageLabel) ||
+              (before.currentStageLabel && !after.currentStageLabel))
+          );
+        })
+        .map((h: any) => h.name);
+      // A stage expense list follows one BOQ, so it is dropped from houses that changed BOQ.
+      const droppedLists = (estate?.projects || []).filter((before: any) => {
+        const after = (updated as any).projects?.find((h: any) => h.id === before.id);
+        return selected.includes(before.id) && before.expenseList && after && !after.expenseList;
+      }).length;
       setEstate(updated);
       const quoteName =
         (estate?.boqs || []).find((b: any) => b.id === applyBoqId)?.name || 'Quotation';
       setInfo(
-        `${quoteName} applied to ${selected.length} house${selected.length === 1 ? '' : 's'}. They are now in the ${quoteName} group.`,
+        `${quoteName} applied to ${selected.length} house${selected.length === 1 ? '' : 's'}. They now have only the stages on ${quoteName}.` +
+          (clearedHouses.length
+            ? ` ${clearedHouses.length} house${clearedHouses.length === 1 ? ' had' : 's had'} a stage that is not on ${quoteName}, so it was cleared: ${clearedHouses.join(', ')}. Set it again if needed.`
+            : '') +
+          (droppedLists
+            ? ` ${droppedLists} house${droppedLists === 1 ? ' was' : 's were'} on a stage expense list built for another BOQ, so that list was removed from ${droppedLists === 1 ? 'it' : 'them'}. Apply the expense list for ${quoteName} instead.`
+            : ''),
       );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function expenseLinesFromQuotation(boq: any, stages?: any[]) {
+    return [...(boq.lines || [])]
+      .sort((a: any, b: any) => Number(a.sortOrder) - Number(b.sortOrder))
+      .map((line: any) => {
+        const saved = (stages || []).find(
+          (stage: any) =>
+            (stage.sectionName || '') === (line.sectionName || '') &&
+            stage.stageName === line.stageName &&
+            stage.entered,
+        );
+        return {
+          sectionName: line.sectionName || '',
+          stageName: line.stageName || '',
+          sortOrder: Number(line.sortOrder) || 0,
+          amount: saved ? String(Number(saved.amountCents) / 100) : '',
+          quoteCents: Number(line.amountCents) || 0,
+        };
+      });
+  }
+
+  function openExpenseList(list?: any) {
+    const boqId = list?.estateBoqId || expenseBoqId;
+    const boq = (estate?.boqs || []).find((item: any) => item.id === boqId);
+    if (!boq) {
+      setError('Choose the quotation this expense list follows.');
+      return;
+    }
+    setError('');
+    setExpenseDraft({
+      id: list?.id || '',
+      name: list?.name || `${boq.name} expenses`,
+      estateBoqId: boq.id,
+      lines: expenseLinesFromQuotation(boq, list?.stages),
+    });
+  }
+
+  async function saveExpenseList() {
+    if (!expenseDraft) return;
+    const name = expenseDraft.name.trim();
+    if (!name) {
+      setError('Expense list name is required.');
+      return;
+    }
+    const lines = expenseDraft.lines
+      .filter((line) => line.amount.trim() !== '')
+      .map((line) => ({
+        sectionName: line.sectionName,
+        stageName: line.stageName,
+        amountCents: Math.round(Number(line.amount.trim()) * 100),
+      }));
+    if (lines.some((line) => !Number.isFinite(line.amountCents) || line.amountCents < 0)) {
+      setError('Enter a valid amount on each stage you have filled in.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api<any>(
+        expenseDraft.id
+          ? `/estates/${id}/expense-lists/${expenseDraft.id}`
+          : `/estates/${id}/expense-lists`,
+        {
+          method: expenseDraft.id ? 'PATCH' : 'POST',
+          body: JSON.stringify({
+            name,
+            estateBoqId: expenseDraft.estateBoqId,
+            lines,
+          }),
+        },
+      );
+      setEstate(updated);
+      setExpenseDraft(null);
+      const saved = (updated.expenseLists || []).find((list: any) => list.name === name);
+      if (saved?.id) setApplyExpenseListId(saved.id);
+      setInfo(
+        saved?.ready
+          ? `${name} saved. Every quotation stage has an expense amount, so it can be applied.`
+          : `${name} saved. Stages still blank stay as not entered yet. Apply stays off until every stage has an amount.`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function removeExpenseList(list: any) {
+    if (
+      !window.confirm(
+        `Delete ${list.name}? Houses using it lose this stage list. Expenses already entered one at a time stay.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api<any>(`/estates/${id}/expense-lists/${list.id}`, { method: 'DELETE' });
+      setEstate(updated);
+      if (expenseDraft?.id === list.id) setExpenseDraft(null);
+      if (applyExpenseListId === list.id) setApplyExpenseListId('');
+      setInfo(`${list.name} deleted.`);
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function applyExpenseList() {
+    const list = (estate?.expenseLists || []).find((item: any) => item.id === applyExpenseListId);
+    if (!list) {
+      setError('Choose an expense list to apply.');
+      return;
+    }
+    if (!list.ready) {
+      setError('Enter an expense amount for every stage on the quotation before applying this list.');
+      return;
+    }
+    if (!selected.length) {
+      setError('Tick the houses you want this expense list applied to.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api<any>(`/estates/${id}/expense-lists/${list.id}/apply`, {
+        method: 'POST',
+        body: JSON.stringify({ projectIds: selected }),
+      });
+      setEstate(updated);
+      setInfo(
+        `${list.name} applied to ${selected.length} house${selected.length === 1 ? '' : 's'}. Each house is charged from its start stage onward.`,
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  /** Apply every ready expense list to all houses on that quotation (no tick needed). */
+  async function applyAllExpenseLists() {
+    const lists = (estate?.expenseLists || []).filter((list: any) => list.ready);
+    if (!lists.length) {
+      setError('No complete expense list to apply. Open Stage expenses and finish every stage amount.');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      let updated: any = estate;
+      let applied = 0;
+      for (const list of lists) {
+        const projectIds = (updated.projects || [])
+          .filter((h: any) => h.estateBoqId === list.estateBoqId)
+          .map((h: any) => h.id);
+        if (!projectIds.length) continue;
+        updated = await api<any>(`/estates/${id}/expense-lists/${list.id}/apply`, {
+          method: 'POST',
+          body: JSON.stringify({ projectIds }),
+        });
+        applied += projectIds.length;
+      }
+      setEstate(updated);
+      setInfo(
+        applied
+          ? `Expense lists applied to ${applied} house assignment(s). Check the Expenses and Profit columns.`
+          : 'Expense lists are ready, but no houses are on those quotations yet.',
+      );
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function clearHouseExpenseList() {
+    const house = (estate?.projects || []).find((item: any) => item.id === managingId);
+    if (!house?.expenseList?.name) return;
+    const listName = house.expenseList.name;
+    if (
+      !window.confirm(
+        `Remove ${listName} from this house? The shared list stays, and expenses already entered one at a time stay.`,
+      )
+    ) {
+      return;
+    }
+    setSaving(true);
+    setError('');
+    setInfo('');
+    try {
+      const updated = await api<any>(`/estates/${id}/houses/${house.id}/expense-list`, {
+        method: 'DELETE',
+      });
+      setEstate(updated);
+      setInfo(`${listName} removed from this house.`);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -542,6 +1018,46 @@ export default function EstateDetailPage() {
     ? quoteStageOptions([{ lines: managing.boqStages }])
     : stageChoices;
 
+  // Bulk stages: ticked houses that have a BOQ can only take stages their BOQ has.
+  const selectedBoqHouses = (estate?.projects || []).filter(
+    (h: any) => selected.includes(h.id) && h.boqStages?.length,
+  );
+  const sharedBoqId = selectedBoqHouses[0]?.estateBoqId;
+  const bulkOneBoq =
+    selectedBoqHouses.length > 0 &&
+    selectedBoqHouses.every((h: any) => h.estateBoqId && h.estateBoqId === sharedBoqId);
+  const bulkStageChoices: (string | { value: string; label: string })[] = !selectedBoqHouses.length
+    ? stageChoices
+    : bulkOneBoq
+      ? quoteStageOptions([{ lines: selectedBoqHouses[0].boqStages }])
+      : selectedBoqHouses
+          .map((h: any) => boqStageValues(h.boqStages))
+          .reduce((common: string[], next: string[]) =>
+            common.filter((stage) => next.some((s) => s.toLowerCase() === stage.toLowerCase())),
+          );
+  const bulkStageValues = bulkStageChoices.map((stage) =>
+    typeof stage === 'string' ? stage : stage.value,
+  );
+  const bulkBoqNames = [...new Set(selectedBoqHouses.map((h: any) => h.estateBoq?.name))].filter(
+    Boolean,
+  );
+  const bulkStageKey = bulkStageValues.join('|');
+  useEffect(() => {
+    // Ticking different houses can take away a stage that was picked; drop it.
+    setBulkStage((prev) => {
+      const keep = (value: string) =>
+        value === '__KEEP__' ||
+        value === '' ||
+        bulkStageValues.some((stage) => stage.toLowerCase() === value.toLowerCase());
+      if (keep(prev.start) && keep(prev.current)) return prev;
+      return {
+        start: keep(prev.start) ? prev.start : '__KEEP__',
+        current: keep(prev.current) ? prev.current : '__KEEP__',
+      };
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bulkStageKey]);
+
   return (
     <AppShell>
       {saving && <BusyOverlay label="Saving house…" />}
@@ -580,10 +1096,6 @@ export default function EstateDetailPage() {
                 </strong>
               </div>
               <div>
-                <div className="muted">Building match discount</div>
-                <strong>{money(t.buildingMatchDiscountCents || 0)}</strong>
-              </div>
-              <div>
                 <div className="muted">Net labour due</div>
                 <strong>{money(t.netDueCents)}</strong>
               </div>
@@ -598,6 +1110,13 @@ export default function EstateDetailPage() {
               <div>
                 <div className="muted">Project expenses</div>
                 <strong>{money(t.projectExpensesCents || 0)}</strong>
+                {Number(t.stageExpenseCents || 0) > 0 || Number(t.groupExpenseCents || 0) > 0 ? (
+                  <div className="muted">
+                    Stage lists {money(t.stageExpenseCents || 0)} · group{' '}
+                    {money(t.groupExpenseCents || 0)} · individual{' '}
+                    {money(t.ledgerProjectExpensesCents || 0)}
+                  </div>
+                ) : null}
               </div>
               <div>
                 <div className="muted">Other fund uses</div>
@@ -613,10 +1132,34 @@ export default function EstateDetailPage() {
               </div>
             </div>
 
+            <h4 style={{ margin: '1rem 0 0.5rem' }}>Client bill vs our cost (per house, compiled)</h4>
+            <div className="grid grid-3">
+              <div>
+                <div className="muted">Clients supposed to pay (net due)</div>
+                <strong>{money(t.netDueCents)}</strong>
+                <div className="muted">Quotation from each start stage − discounts</div>
+              </div>
+              <div>
+                <div className="muted">Our cost on those stages</div>
+                <strong>{money(t.jobCostCents ?? 0)}</strong>
+                <div className="muted">
+                  Stage lists {money(t.stageExpenseCents || 0)} · group/food{' '}
+                  {money(t.groupExpenseCents || 0)}
+                </div>
+              </div>
+              <div>
+                <div className="muted">Profit (all houses)</div>
+                <strong style={{ color: Number(t.marginCents || 0) >= 0 ? '#166534' : '#b91c1c' }}>
+                  {money(t.marginCents ?? 0)}
+                </strong>
+                <div className="muted">Client due − stage/group expenses</div>
+              </div>
+            </div>
+
             <h4 style={{ margin: '1rem 0 0.5rem' }}>Company / profit account</h4>
             <div className="grid grid-3">
               <div>
-                <div className="muted">Profit earned</div>
+                <div className="muted">Profit earned (after labour used)</div>
                 <strong>{money(t.profitEarnedCents ?? 0)}</strong>
               </div>
               <div>
@@ -637,11 +1180,9 @@ export default function EstateDetailPage() {
               </div>
             </div>
             <p className="muted" style={{ marginTop: '0.75rem' }}>
-              Project expenses come from the labour account. Company expenses come from profit
-              (net labour due − labour used − project expenses). Building match discount keeps
-              older houses at the labour amount already allocated when a stage BOQ is applied.
-              Cash at hand = labour balance − company expenses. Borrowings come from the labour pot
-              and must be repaid.
+              Client due uses quotation stages from each house’s start stage. Our cost uses the
+              matching expense-list stages (plus food/group).               Record cash on Manage house or Bulk allocate.{' '}
+              <a href="#stage-expenses">Open stage expenses</a> to see or apply lists.
             </p>
             <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginTop: '0.5rem' }}>
               <button
@@ -698,7 +1239,8 @@ export default function EstateDetailPage() {
             </div>
           </div>
 
-          <div className="panel" style={{ marginBottom: '1rem' }}>
+          <div className="grid grid-2" style={{ marginBottom: '1rem', alignItems: 'start' }}>
+          <div className="panel">
             <h3>Stage BOQs</h3>
             <p className="muted">
               Tick the houses, select a quotation, then apply. Those houses move into that
@@ -880,12 +1422,256 @@ export default function EstateDetailPage() {
             )}
           </div>
 
+          <div className="panel" id="stage-expenses">
+            <h3>Stage expenses</h3>
+            <p className="muted">
+              These lists must match the quotation stages (same stages, expense amounts). Choose a
+              quotation, open a list, and apply it to houses so the Expenses column fills in. Stages
+              before a house’s start stage are not charged. Food stays a group expense below.
+            </p>
+            {(estate.expenseLists || []).length === 0 ? (
+              <p className="error" style={{ marginBottom: '0.75rem' }}>
+                No expense list yet. Select a quotation → New list → enter every stage amount →
+                Save → select houses → Apply. Without this, profit per house cannot use stage costs.
+              </p>
+            ) : (
+              <div
+                style={{
+                  marginBottom: '0.75rem',
+                  padding: '0.65rem 0.75rem',
+                  background: '#f6f3ee',
+                  borderRadius: 6,
+                }}
+              >
+                <strong>{(estate.expenseLists || []).length} expense list(s) on this estate</strong>
+                <ul style={{ margin: '0.35rem 0 0', paddingLeft: '1.1rem' }}>
+                  {(estate.expenseLists || []).map((list: any) => {
+                    const onHouses = (estate.projects || []).filter(
+                      (h: any) => h.expenseList?.id === list.id,
+                    ).length;
+                    return (
+                      <li key={list.id}>
+                        {list.name} · {list.boq?.name || 'Quotation'} ·{' '}
+                        {money(list.enteredCents || 0)}
+                        {list.ready ? '' : ` · ${list.missingCount} stages incomplete`} · on{' '}
+                        {onHouses} house{onHouses === 1 ? '' : 's'}
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
+            )}
+            <div className="form grid grid-2" style={{ marginBottom: '0.75rem' }}>
+              <label>
+                Quotation
+                <select value={expenseBoqId} onChange={(e) => setExpenseBoqId(e.target.value)}>
+                  <option value="">Select a quotation</option>
+                  {(estate.boqs || []).map((b: any) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                <button type="button" className="btn secondary" onClick={() => openExpenseList()}>
+                  New list
+                </button>
+              </div>
+            </div>
+            <div className="form grid grid-2" style={{ marginBottom: '0.75rem' }}>
+              <label>
+                Expense list
+                <select
+                  value={applyExpenseListId}
+                  onChange={(e) => setApplyExpenseListId(e.target.value)}
+                >
+                  <option value="">Select an expense list</option>
+                  {(estate.expenseLists || []).map((list: any) => (
+                    <option key={list.id} value={list.id}>
+                      {list.name}
+                      {list.ready ? '' : ' · not complete'}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div style={{ display: 'flex', alignItems: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+                <button
+                  type="button"
+                  className="btn"
+                  disabled={
+                    saving ||
+                    !applyExpenseListId ||
+                    !selected.length ||
+                    !(estate.expenseLists || []).find((list: any) => list.id === applyExpenseListId)
+                      ?.ready
+                  }
+                  onClick={applyExpenseList}
+                >
+                  Apply{' '}
+                  {(estate.expenseLists || []).find((list: any) => list.id === applyExpenseListId)
+                    ?.name || 'list'}{' '}
+                  to {selected.length} selected
+                </button>
+                <button
+                  type="button"
+                  className="btn secondary"
+                  disabled={saving || !(estate.expenseLists || []).some((list: any) => list.ready)}
+                  onClick={applyAllExpenseLists}
+                >
+                  Apply all lists to quotation houses
+                </button>
+              </div>
+            </div>
+            {(estate.expenseLists || []).length > 0 && (
+              <ul>
+                {(estate.expenseLists || []).map((list: any) => (
+                  <li key={list.id}>
+                    <strong>{list.name}</strong>
+                    <span className="muted">
+                      {' '}
+                      · {list.boq?.name || 'Quotation'} · {money(list.enteredCents || 0)} entered
+                      {list.ready
+                        ? ''
+                        : ` · ${list.missingCount} stage${list.missingCount === 1 ? '' : 's'} not entered yet`}
+                    </span>{' '}
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      style={{ padding: '0.1rem 0.4rem' }}
+                      onClick={() => openExpenseList(list)}
+                    >
+                      Edit
+                    </button>{' '}
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      style={{ padding: '0.1rem 0.4rem' }}
+                      onClick={() => removeExpenseList(list)}
+                    >
+                      Delete
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {expenseDraft && (
+              <div style={{ marginTop: '0.75rem' }}>
+                <label className="form">
+                  List name
+                  <input
+                    value={expenseDraft.name}
+                    onChange={(e) => setExpenseDraft({ ...expenseDraft, name: e.target.value })}
+                  />
+                </label>
+                <p className="muted">
+                  Stages from{' '}
+                  {(estate.boqs || []).find((b: any) => b.id === expenseDraft.estateBoqId)?.name ||
+                    'this quotation'}
+                  . Labour amounts stay on the quotation. These amounts are the expense for the same
+                  stage.
+                </p>
+                <div className="table-wrap" style={{ marginTop: '0.5rem' }}>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Stage</th>
+                        <th style={{ width: 160 }}>Expense (US$)</th>
+                        <th style={{ width: 160 }}>Quotation (US$)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {expenseDraft.lines.map((line, i) => {
+                        const previous = expenseDraft.lines[i - 1];
+                        const showSection =
+                          !!line.sectionName && line.sectionName !== previous?.sectionName;
+                        return (
+                          <Fragment key={`${line.sectionName}-${line.stageName}-${line.sortOrder}`}>
+                            {showSection && (
+                              <tr>
+                                <td colSpan={3} style={{ background: '#f6f3ee' }}>
+                                  <strong>{line.sectionName}</strong>
+                                </td>
+                              </tr>
+                            )}
+                            <tr>
+                              <td>
+                                {line.stageName}
+                                {line.amount.trim() === '' && (
+                                  <div className="muted">
+                                    This stage from the quotation has not been entered yet.
+                                  </div>
+                                )}
+                              </td>
+                              <td>
+                                <input
+                                  type="number"
+                                  min="0"
+                                  step="0.01"
+                                  value={line.amount}
+                                  aria-label={`Expense for ${line.stageName}`}
+                                  onChange={(e) =>
+                                    setExpenseDraft({
+                                      ...expenseDraft,
+                                      lines: expenseDraft.lines.map((item, idx) =>
+                                        idx === i ? { ...item, amount: e.target.value } : item,
+                                      ),
+                                    })
+                                  }
+                                  style={{ width: '100%' }}
+                                />
+                              </td>
+                              <td>{money(line.quoteCents)}</td>
+                            </tr>
+                          </Fragment>
+                        );
+                      })}
+                      <tr>
+                        <td>
+                          <strong>Total</strong>
+                        </td>
+                        <td>
+                          <strong>
+                            {money(
+                              expenseDraft.lines.reduce((sum, line) => {
+                                if (line.amount.trim() === '') return sum;
+                                const cents = Math.round(Number(line.amount) * 100);
+                                return sum + (Number.isFinite(cents) ? cents : 0);
+                              }, 0),
+                            )}
+                          </strong>
+                        </td>
+                        <td>
+                          <strong>
+                            {money(
+                              expenseDraft.lines.reduce((sum, line) => sum + line.quoteCents, 0),
+                            )}
+                          </strong>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <div className="row-actions" style={{ gap: 8, marginTop: '0.5rem' }}>
+                  <button type="button" className="btn" disabled={saving} onClick={saveExpenseList}>
+                    Save list
+                  </button>
+                  <button type="button" className="btn secondary" onClick={() => setExpenseDraft(null)}>
+                    Close
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+          </div>
+
           <div className="panel" style={{ marginBottom: '1rem' }}>
             <h3>Expenses &amp; borrowings</h3>
             <p className="muted">
-              Project expense comes from the labour account. Company expense comes from the profit
-              account. Write what each expense was for. Borrowings still come from the labour pot
-              and must be repaid.
+              Project expense comes from the labour account for one house. Group expense charges
+              the same amount to every house on a quotation, such as food for Mandevilla or
+              Lagrand. Company expense comes from the profit account. Borrowings still come from
+              the labour pot and must be repaid.
             </p>
             <form className="form grid grid-2" onSubmit={saveLedger}>
               <label>
@@ -924,16 +1710,36 @@ export default function EstateDetailPage() {
                       onChange={(e) =>
                         setLedgerForm({
                           ...ledgerForm,
-                          expenseCategory: e.target.value as 'COMPANY' | 'PROJECT',
-                          projectId:
-                            e.target.value === 'PROJECT' ? ledgerForm.projectId : '',
+                          expenseCategory: e.target.value as 'COMPANY' | 'PROJECT' | 'GROUP',
+                          projectId: e.target.value === 'PROJECT' ? ledgerForm.projectId : '',
+                          estateBoqId: e.target.value === 'GROUP' ? ledgerForm.estateBoqId : '',
                         })
                       }
                     >
                       <option value="COMPANY">Company expense (from profit)</option>
-                      <option value="PROJECT">Project expense (from labour)</option>
+                      <option value="PROJECT">Project expense (one house, from labour)</option>
+                      <option value="GROUP">Group expense (same amount on a quotation)</option>
                     </select>
                   </label>
+                  {ledgerForm.expenseCategory === 'GROUP' && (
+                    <label>
+                      Quotation
+                      <select
+                        required
+                        value={ledgerForm.estateBoqId}
+                        onChange={(e) =>
+                          setLedgerForm({ ...ledgerForm, estateBoqId: e.target.value })
+                        }
+                      >
+                        <option value="">Select a quotation</option>
+                        {(estate.boqs || []).map((b: any) => (
+                          <option key={b.id} value={b.id}>
+                            {b.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
                   {ledgerForm.expenseCategory === 'PROJECT' && (
                     <label>
                       House / project
@@ -1002,8 +1808,16 @@ export default function EstateDetailPage() {
                 </>
               )}
               <div style={{ gridColumn: '1 / -1' }}>
+                {ledgerForm.expenseCategory === 'GROUP' && ledgerForm.kind === 'EXPENSE' && (
+                  <p className="muted">
+                    Each house on the selected quotation is charged this full amount. The amount is
+                    not split between them.
+                  </p>
+                )}
                 <button type="submit" className="btn" disabled={saving}>
-                  Record on estate statement
+                  {ledgerForm.kind === 'EXPENSE' && ledgerForm.expenseCategory === 'GROUP'
+                    ? 'Apply group expense'
+                    : 'Record on estate statement'}
                 </button>
               </div>
             </form>
@@ -1011,6 +1825,36 @@ export default function EstateDetailPage() {
             {statement && (
               <div className="grid grid-2" style={{ marginTop: '1rem' }}>
                 <div>
+                  <h4>Group expenses</h4>
+                  <ul>
+                    {(estate.groupExpenses || []).map((expense: any) => (
+                      <li key={expense.id}>
+                        {money(expense.amountCents)} each · {expense.boq?.name || 'Quotation'} ·{' '}
+                        {expense.description}
+                        {expense.partyName ? ` · ${expense.partyName}` : ''} · {expense.houseCount}{' '}
+                        house{expense.houseCount === 1 ? '' : 's'} · {money(expense.totalCents)}{' '}
+                        together{' '}
+                        <button
+                          type="button"
+                          className="btn secondary"
+                          style={{ padding: '0.1rem 0.4rem', fontSize: '0.75rem' }}
+                          onClick={() =>
+                            api<any>(`/estates/${id}/group-expenses/${expense.id}`, {
+                              method: 'DELETE',
+                            })
+                              .then(async (updated) => {
+                                setEstate(updated);
+                                setStatement(await api(`/estates/${id}/statement`));
+                              })
+                              .catch((err) => setError(err.message))
+                          }
+                        >
+                          Remove
+                        </button>
+                      </li>
+                    ))}
+                    {!estate.groupExpenses?.length && <li className="muted">None yet</li>}
+                  </ul>
                   <h4>Expenses listed</h4>
                   <ul>
                     {(statement.expenses || []).map((x: any) => (
@@ -1081,6 +1925,8 @@ export default function EstateDetailPage() {
                           const discountLine =
                             l.section === 'CONTRACT' &&
                             String(l.description || '').startsWith('Discounts granted');
+                          const stageExpenseLine = l.section === 'STAGE_EXPENSE';
+                          const groupExpenseLine = l.section === 'GROUP_EXPENSE';
                           const byQuote = new Map<string, any[]>();
                           if (quotedLine) {
                             for (const h of estate.projects || []) {
@@ -1119,6 +1965,26 @@ export default function EstateDetailPage() {
                                       onClick={() => setDiscountsOpen((open) => !open)}
                                     >
                                       {discountsOpen ? '▾' : '▸'} {l.description}
+                                    </button>
+                                  ) : stageExpenseLine ? (
+                                    <button
+                                      type="button"
+                                      className="btn secondary"
+                                      style={{ padding: '0.15rem 0.5rem' }}
+                                      aria-expanded={stageExpensesOpen}
+                                      onClick={() => setStageExpensesOpen((open) => !open)}
+                                    >
+                                      {stageExpensesOpen ? '▾' : '▸'} {l.description}
+                                    </button>
+                                  ) : groupExpenseLine ? (
+                                    <button
+                                      type="button"
+                                      className="btn secondary"
+                                      style={{ padding: '0.15rem 0.5rem' }}
+                                      aria-expanded={groupExpensesOpen}
+                                      onClick={() => setGroupExpensesOpen((open) => !open)}
+                                    >
+                                      {groupExpensesOpen ? '▾' : '▸'} {l.description}
                                     </button>
                                   ) : (
                                     l.description
@@ -1196,6 +2062,91 @@ export default function EstateDetailPage() {
                                       <td></td>
                                     </tr>
                                   ))}
+                                </>
+                              )}
+                              {stageExpenseLine && stageExpensesOpen && (
+                                <>
+                                  {[
+                                    ...new Map(
+                                      (estate.projects || [])
+                                        .filter((h: any) => h.expenseList?.id)
+                                        .map((h: any) => [h.expenseList.name, h.expenseList.name]),
+                                    ).keys(),
+                                  ].map((listName) => {
+                                    const houses = (estate.projects || []).filter(
+                                      (h: any) => h.expenseList?.name === listName,
+                                    );
+                                    return (
+                                      <Fragment key={String(listName)}>
+                                        <tr>
+                                          <td></td>
+                                          <td>
+                                            <strong>
+                                              {listName} · {houses.length} house
+                                              {houses.length === 1 ? '' : 's'}
+                                            </strong>
+                                          </td>
+                                          <td></td>
+                                          <td>
+                                            {money(
+                                              houses.reduce(
+                                                (sum: number, h: any) =>
+                                                  sum + Number(h.expenseIncludedCents || 0),
+                                                0,
+                                              ),
+                                            )}
+                                          </td>
+                                        </tr>
+                                        {houses.map((h: any) => (
+                                          <tr key={h.id}>
+                                            <td></td>
+                                            <td style={{ paddingLeft: '1.25rem' }}>
+                                              {h.unitNumber}. {h.name}
+                                              {h.client?.name ? ` · ${h.client.name}` : ''}
+                                            </td>
+                                            <td></td>
+                                            <td>{money(h.expenseIncludedCents || 0)}</td>
+                                          </tr>
+                                        ))}
+                                      </Fragment>
+                                    );
+                                  })}
+                                </>
+                              )}
+                              {groupExpenseLine && groupExpensesOpen && (
+                                <>
+                                  {(estate.groupExpenses || []).map((expense: any) => {
+                                    const houses = (estate.projects || []).filter(
+                                      (h: any) => h.estateBoqId === expense.estateBoqId,
+                                    );
+                                    return (
+                                      <Fragment key={expense.id}>
+                                        <tr>
+                                          <td></td>
+                                          <td>
+                                            <strong>
+                                              {expense.boq?.name || 'Quotation'} · {expense.description}{' '}
+                                              · {money(expense.amountCents)} each · {houses.length}{' '}
+                                              house{houses.length === 1 ? '' : 's'}
+                                            </strong>
+                                          </td>
+                                          <td></td>
+                                          <td>{money(expense.totalCents || 0)}</td>
+                                        </tr>
+                                        {houses.map((h: any) => (
+                                          <tr key={`${expense.id}-${h.id}`}>
+                                            <td></td>
+                                            <td style={{ paddingLeft: '1.25rem' }}>
+                                              {h.unitNumber}. {h.name}
+                                              {h.client?.name ? ` · ${h.client.name}` : ''}
+                                            </td>
+                                            <td></td>
+                                            <td>{money(expense.amountCents)}</td>
+                                          </tr>
+                                        ))}
+                                      </Fragment>
+                                    );
+                                  })}
                                 </>
                               )}
                             </Fragment>
@@ -1373,6 +2324,7 @@ export default function EstateDetailPage() {
                   Close
                 </button>
               </h3>
+              <ClientStatement house={managing} ledger={estate.ledgerEntries || []} />
               <form className="form grid grid-2" onSubmit={saveManage}>
                 <label>
                   House name
@@ -1449,16 +2401,47 @@ export default function EstateDetailPage() {
                     )}
                   />
                 </label>
+                <label>
+                  Record cash this client paid
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="e.g. 500"
+                    value={cashPayment}
+                    onChange={(e) => setCashPayment(e.target.value)}
+                  />
+                </label>
+                <div style={{ display: 'flex', alignItems: 'flex-end' }}>
+                  <button
+                    type="button"
+                    className="btn"
+                    disabled={saving || !cashPayment}
+                    onClick={(e) => recordCashPayment(e as unknown as FormEvent)}
+                  >
+                    Add cash received
+                  </button>
+                </div>
                 <div style={{ gridColumn: '1 / -1' }}>
                   <p className="muted">
                     Current trail: quoted {money(managing.trail.labourQuotedCents)} − discount{' '}
-                    {money(managing.trail.discountCents)}
-                    {managing.trail.buildingMatchDiscountCents
-                      ? ` − building match ${money(managing.trail.buildingMatchDiscountCents)}`
-                      : ''}{' '}
-                    = net {money(managing.trail.netDueCents)}. Owes{' '}
-                    {money(managing.trail.clientOwesCents)}.
+                    {money(managing.trail.discountCents)} = client due{' '}
+                    {money(managing.trail.netDueCents)}. Cash in{' '}
+                    {money(managing.trail.cashReceivedCents)}. Owes{' '}
+                    {money(managing.trail.clientOwesCents)}. Our cost{' '}
+                    {money(managing.jobCostCents ?? (managing.expenseIncludedCents || 0) + (managing.groupExpenseCents || 0))}
+                    . Profit{' '}
+                    {money(
+                      managing.marginCents ??
+                        managing.trail.netDueCents -
+                          (managing.expenseIncludedCents || 0) -
+                          (managing.groupExpenseCents || 0),
+                    )}
+                    .
                     {managing.estateBoq?.name ? ` Quotation: ${managing.estateBoq.name}.` : ''}
+                    {form.startStage
+                      ? ` Started at ${form.startStage}. Stages before that are not charged.`
+                      : ''}
                   </p>
                   {managing.estateBoq?.name && (
                     <p>
@@ -1471,6 +2454,65 @@ export default function EstateDetailPage() {
                         Remove quotation from this house
                       </button>
                     </p>
+                  )}
+                  {managing.expenseList?.name && (
+                    <p>
+                      Stage expenses: {managing.expenseList.name} · included{' '}
+                      {money(managing.expenseIncludedCents || 0)}. Stages before the start stage are
+                      not charged.{' '}
+                      <button
+                        type="button"
+                        className="btn secondary"
+                        disabled={saving}
+                        onClick={clearHouseExpenseList}
+                      >
+                        Remove expense list from this house
+                      </button>
+                    </p>
+                  )}
+                  {!!managing.groupExpenses?.length && (
+                    <p>
+                      Group expenses on {managing.estateBoq?.name || 'this quotation'}:{' '}
+                      {managing.groupExpenses
+                        .map((expense: any) => `${expense.description} ${money(expense.amountCents)}`)
+                        .join(', ')}
+                      . Each house on this quotation is charged the same amount.
+                    </p>
+                  )}
+                  {!!managing.expenseStages?.length && (
+                    <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Expense stage</th>
+                            <th>Amount</th>
+                            <th>Charge</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {managing.expenseStages.map((s: any) => (
+                            <tr key={`expense-${s.sectionName}-${s.stageName}-${s.sortOrder}`}>
+                              <td>
+                                {s.stageName}
+                                {!s.entered && (
+                                  <div className="muted">
+                                    This stage from the quotation has not been entered yet.
+                                  </div>
+                                )}
+                              </td>
+                              <td>{s.entered ? money(s.amountCents) : '—'}</td>
+                              <td>
+                                {!s.entered
+                                  ? 'Not entered'
+                                  : s.included
+                                    ? 'Charged'
+                                    : `Not charged. Started at ${form.startStage || 'a later stage'}.`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   )}
                   {!!managing.boqStages?.length && (
                     <div className="table-wrap" style={{ marginBottom: '0.75rem' }}>
@@ -1487,7 +2529,11 @@ export default function EstateDetailPage() {
                           <tr key={`${s.sectionName}-${s.stageName}-${s.sortOrder}`}>
                             <td>{s.stageName}</td>
                               <td>{money(s.amountCents)}</td>
-                              <td>{s.included ? 'Charged' : 'Not charged (before start)'}</td>
+                              <td>
+                                {s.included
+                                  ? 'Charged'
+                                  : `Not charged. Started at ${form.startStage || 'a later stage'}.`}
+                              </td>
                             </tr>
                           ))}
                         </tbody>
@@ -1606,12 +2652,21 @@ export default function EstateDetailPage() {
               Tick houses in the table below, then set the stage we received them at, the stage
               they are at now, or both. Use this again any time to reassign.
             </p>
+            {bulkBoqNames.length > 0 && (
+              <p className="muted">
+                Stages shown are the ones on {bulkBoqNames.join(' and ')}
+                {bulkBoqNames.length > 1 ? ', limited to stages both BOQs have' : ''}.
+                {selectedBoqHouses.length > 0 && bulkStageChoices.length === 0
+                  ? ' The ticked houses use BOQs with no stage in common. Tick houses with the same BOQ.'
+                  : ''}
+              </p>
+            )}
             <div className="form grid grid-2">
               <label>
                 Start stage (when received)
                 <StageSelect
                   keepOption
-                  stages={stageChoices}
+                  stages={bulkStageChoices}
                   value={bulkStage.start}
                   emptyLabel="Clear (not set)"
                   onChange={(v) => setBulkStage({ ...bulkStage, start: v })}
@@ -1621,7 +2676,7 @@ export default function EstateDetailPage() {
                 Current stage (now)
                 <StageSelect
                   keepOption
-                  stages={stageChoices}
+                  stages={bulkStageChoices}
                   value={bulkStage.current}
                   emptyLabel="Clear (not set)"
                   onChange={(v) => setBulkStage({ ...bulkStage, current: v })}
@@ -1644,8 +2699,8 @@ export default function EstateDetailPage() {
             <h3>Houses</h3>
             <p className="muted">
               Houses are grouped by the quotation applied to them. Tick houses, choose the
-              quotation above, then apply. Click Manage to rename a house, set the owner, change
-              stages, or grant an individual discount.
+              quotation or an expense list above, then apply. Click Manage to rename a house, set
+              the owner, change stages, or grant an individual discount.
             </p>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', marginBottom: '0.75rem' }}>
               <label style={{ maxWidth: 360, flex: '1 1 220px' }}>
@@ -1710,10 +2765,12 @@ export default function EstateDetailPage() {
                     <th>Current stage</th>
                     <th>Complete</th>
                     <th>BOQ</th>
+                    <th>Expenses</th>
                     <th>Quoted</th>
                     <th>Discount</th>
-                    <th>Building match</th>
-                    <th>Net due</th>
+                    <th>Client due</th>
+                    <th>Our cost</th>
+                    <th>Profit</th>
                     <th>Cash in</th>
                     <th>Owes</th>
                     <th></th>
@@ -1722,7 +2779,7 @@ export default function EstateDetailPage() {
                 <tbody>
                   {visibleHouses.length === 0 && (
                     <tr>
-                      <td colSpan={14} className="muted">
+                      <td colSpan={16} className="muted">
                         No house matches.
                       </td>
                     </tr>
@@ -1730,7 +2787,7 @@ export default function EstateDetailPage() {
                   {houseGroups.map((group) => (
                     <Fragment key={group.name}>
                       <tr>
-                        <td colSpan={14} style={{ background: '#f6f3ee' }}>
+                        <td colSpan={16} style={{ background: '#f6f3ee' }}>
                           <strong>{group.name}</strong>
                           <span className="muted">
                             {' '}
@@ -1761,27 +2818,32 @@ export default function EstateDetailPage() {
                         <div className="muted">{h.code}</div>
                       </td>
                       <td>
-                        {resolveQuoteStage(h.catchupStageLabel, quoteStages) || (
+                        {houseStage(h, h.catchupStageLabel, quoteStages) || (
                           <span className="muted">Not set</span>
                         )}
                       </td>
                       <td>
-                        {resolveQuoteStage(h.currentStageLabel, quoteStages) || (
+                        {h.currentStageLabel || (
                           <span className="muted">Not set</span>
                         )}
                       </td>
                       <td>
                         <StageCompletion
-                          stage={resolveQuoteStage(h.currentStageLabel, quoteStages)}
+                          stage={h.currentStageLabel || ''}
                           templates={templates}
-                          quoteStages={
-                            h.boqStages?.length
-                              ? quoteStageOptions([{ lines: h.boqStages }]).map((stage) => stage.value)
-                              : quoteStages
-                          }
+                          quoteStages={houseStageValues(h, quoteStages)}
                         />
                       </td>
                       <td>{h.estateBoq?.name || <span className="muted">None</span>}</td>
+                      <td>
+                        {h.expenseList?.name || <span className="muted">None — apply list above</span>}
+                        {h.expenseList && (
+                          <div className="muted">Stages {money(h.expenseIncludedCents || 0)}</div>
+                        )}
+                        {Number(h.groupExpenseCents || 0) > 0 && (
+                          <div className="muted">Food/group {money(h.groupExpenseCents)}</div>
+                        )}
+                      </td>
                       <td>{money(h.trail.labourQuotedCents)}</td>
                       <td>
                         {money(h.trail.discountCents)}
@@ -1789,8 +2851,33 @@ export default function EstateDetailPage() {
                           <div className="muted">{h.discountReason}</div>
                         ) : null}
                       </td>
-                      <td>{money(h.trail.buildingMatchDiscountCents || 0)}</td>
                       <td>{money(h.trail.netDueCents)}</td>
+                      <td>
+                        {money(
+                          h.jobCostCents ??
+                            (h.expenseIncludedCents || 0) + (h.groupExpenseCents || 0),
+                        )}
+                      </td>
+                      <td
+                        style={{
+                          color:
+                            Number(
+                              h.marginCents ??
+                                h.trail.netDueCents -
+                                  (h.expenseIncludedCents || 0) -
+                                  (h.groupExpenseCents || 0),
+                            ) >= 0
+                              ? undefined
+                              : '#b91c1c',
+                        }}
+                      >
+                        {money(
+                          h.marginCents ??
+                            h.trail.netDueCents -
+                              (h.expenseIncludedCents || 0) -
+                              (h.groupExpenseCents || 0),
+                        )}
+                      </td>
                       <td>{money(h.trail.cashReceivedCents)}</td>
                       <td>{money(h.trail.clientOwesCents)}</td>
                       <td>

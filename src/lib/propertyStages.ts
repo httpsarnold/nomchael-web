@@ -143,49 +143,89 @@ function quoteDescription(stage: string) {
   return (parts.length > 1 ? parts.slice(1).join(' · ') : stage).trim().toLowerCase();
 }
 
-/** Older template names, pointed at the quotation line they stand for. */
-const QUOTE_STAGE_ALIASES: Record<string, { description: string; pick: 'first' | 'last' }> = {
-  'back filling and compacting concrete slab': { description: 'concrete slab', pick: 'first' },
-  'concrete roof deck 1': { description: 'concrete roof deck', pick: 'first' },
-  'concrete roof deck 2': { description: 'concrete roof deck', pick: 'first' },
-  'roof deck steel fixing 1': { description: 'roof deck steel fixing', pick: 'first' },
-  'roof deck steel fixing 2': { description: 'roof deck steel fixing', pick: 'first' },
-  'parapet and wall coping': { description: 'parrapet and wall couping', pick: 'first' },
-  'site clearing': { description: 'land clearing', pick: 'first' },
-  foundation: { description: 'concrete bases', pick: 'first' },
-  slab: { description: 'concrete slab', pick: 'first' },
-  walls: { description: 'average level', pick: 'first' },
-  'average level': { description: 'average level', pick: 'last' },
-  'window level': { description: 'window level', pick: 'last' },
-  'steel structure': { description: 'steel fixing of ring beam', pick: 'first' },
-  'roof structure': { description: 'wall plate', pick: 'first' },
-  plumbing: { description: 'plumbing fix and supply', pick: 'first' },
+/** Same as quoteDescription without a trailing "(section)" qualifier. */
+function baseDescription(stage: string) {
+  return quoteDescription(stage).replace(/\s*\([^)]*\)\s*$/, '');
+}
+
+type QuotePick = 'first' | 'last';
+type QuoteCandidate = { description: string; pick: QuotePick };
+const cand = (description: string, pick: QuotePick = 'first'): QuoteCandidate => ({
+  description,
+  pick,
+});
+
+/**
+ * Older labels (stage templates, earlier BOQs) pointed at the BOQ stage they stand for.
+ * Each label lists the BOQ descriptions it may map to; the first one the BOQ has wins.
+ * Mirrors apps/api/src/labour-revenue/quote-stages.ts.
+ */
+const QUOTE_STAGE_ALIASES: Record<string, QuoteCandidate[]> = {
+  'back filling and compacting concrete slab': [cand('concrete slab')],
+  'concrete roof deck 1': [cand('concrete roof deck'), cand('concrete deck')],
+  'concrete roof deck 2': [cand('concrete roof deck'), cand('concrete deck')],
+  'concrete roof deck': [cand('concrete deck')],
+  'deck concrete': [cand('concrete deck')],
+  'roof deck steel fixing 1': [cand('roof deck steel fixing'), cand('deck steel fixing')],
+  'roof deck steel fixing 2': [cand('roof deck steel fixing'), cand('deck steel fixing')],
+  'roof deck steel fixing': [cand('deck steel fixing')],
+  'parapet and wall coping': [cand('parrapet and wall couping'), cand('parapet wall')],
+  'parrapet and wall couping': [cand('parapet wall')],
+  'site clearing': [cand('land clearing'), cand('site clearance')],
+  'land clearing': [cand('site clearance')],
+  'setting out': [cand('column excavation')],
+  'trench excavation': [cand('column excavation')],
+  'back filling and compacting': [cand('back filling')],
+  'fixing of bases, columns and ground beams': [cand('steel fixing of bases and stubs')],
+  'shuttering of bases columns and beams': [cand('shuttering of stubs')],
+  foundation: [cand('concrete bases')],
+  slab: [cand('concrete slab')],
+  'concrete slab': [cand('concrete slab')],
+  walls: [cand('average level'), cand('window level')],
+  // The older "Average level" start was the start of the roof deck section, which on the
+  // labour stages BOQs begins at deck steel fixing.
+  'average level': [cand('average level', 'last'), cand('deck steel fixing')],
+  'window level': [cand('window level', 'last')],
+  'shattering of ring beam': [cand('ring beam shuttering')],
+  'shuttering of ring beam': [cand('ring beam shuttering', 'last')],
+  'steel fixing of ring beam': [cand('ring beam steel fixing')],
+  'ring beam concrete': [cand('concrete ring beam')],
+  'steel fixing': [cand('ring beam steel fixing', 'last')],
+  'wall plate ff': [cand('wall plate', 'last')],
+  'steel structure': [cand('steel fixing of ring beam'), cand('ring beam steel fixing')],
+  'roof structure': [cand('wall plate')],
+  plumbing: [cand('plumbing fix and supply'), cand('plumbing')],
+  'plumbing fix and supply': [cand('plumbing')],
 };
 
-function pickQuoteStage(
-  quoteStages: string[],
-  description: string,
-  pick: 'first' | 'last',
-) {
-  const matches = quoteStages.filter((stage) => quoteDescription(stage) === description);
+function pickQuoteStage(quoteStages: string[], description: string, pick: QuotePick) {
+  const matches = quoteStages.filter((stage) => baseDescription(stage) === description);
   if (!matches.length) return '';
   return pick === 'first' ? matches[0] : matches[matches.length - 1];
 }
 
-/** Map a stored stage onto a quotation stage when the estate has a BOQ. */
-export function resolveQuoteStage(label: string | null | undefined, quoteStages: string[]) {
+/**
+ * Map a stored stage onto one of a BOQ's stages. A house with a BOQ has only that BOQ's
+ * stages, so with `strict` a label the BOQ does not have returns '' instead of the label.
+ */
+export function resolveQuoteStage(
+  label: string | null | undefined,
+  quoteStages: string[],
+  strict = false,
+) {
   const raw = (label || '').trim();
-  if (!raw || !quoteStages.length) return raw;
+  if (!raw) return '';
+  if (!quoteStages.length) return strict ? '' : raw;
   const lower = raw.toLowerCase();
   const exact = quoteStages.find((stage) => stage.toLowerCase() === lower);
   if (exact) return exact;
   const bare = quoteDescription(raw);
   const keys = bare !== lower ? [lower, bare] : [lower];
   for (const key of keys) {
-    const alias = QUOTE_STAGE_ALIASES[key];
-    if (!alias) continue;
-    const aliased = pickQuoteStage(quoteStages, alias.description, alias.pick);
-    if (aliased) return aliased;
+    for (const alias of QUOTE_STAGE_ALIASES[key] || []) {
+      const aliased = pickQuoteStage(quoteStages, alias.description, alias.pick);
+      if (aliased) return aliased;
+    }
   }
   for (const key of keys) {
     const described = pickQuoteStage(quoteStages, key, 'last');
@@ -197,7 +237,14 @@ export function resolveQuoteStage(label: string | null | undefined, quoteStages:
     const numbered = pickQuoteStage(quoteStages, stripped, 'first');
     if (numbered) return numbered;
   }
-  return raw;
+  return strict ? '' : raw;
+}
+
+/** The stage labels a house's own BOQ lines define, in order. */
+export function boqStageValues(
+  lines: { stageName?: string | null; sectionName?: string | null; sortOrder?: number }[] | null | undefined,
+) {
+  return quoteStageOptions([{ lines: lines || [] }]).map((stage) => stage.value);
 }
 
 function stageMoney(cents: number) {
